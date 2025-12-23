@@ -1,0 +1,34 @@
+Players interact following the one-shot PGG of size 𝐺. For a player to decide to contribute to the common pool, we introduce
+a commitment threshold 𝜏 that allows them to reconsider their choice. Each player must commit or not to cooperate prior to the
+actual interaction. Now, players can decide whether to cooperate if the commitment threshold is reached by the group members, as
+well as whether to cooperate otherwise. We use the notation 𝑖𝑗𝑘 to denote each strategy, where 𝑖 is the decision to accept or not to
+commit (𝑖 = 𝐴 or 𝑁); 𝑗 the decision to cooperate or not if the commitment is formed (𝑗 = 𝐶 or 𝐷); and 𝑘 the decision to cooperate
+or not if the commitment is not formed (𝑘 = 𝐶 or 𝐷). For example, the 𝑁𝐶𝐷 strategy does not commit (𝑖 = 𝑁), cooperates if the
+commitment is formed (𝑗 = 𝐶), and defects if it is not formed (𝑘 = 𝐷). In total, there are eight possible strategies, summarised in
+Table I.
+
+For one group 𝑋, an individual with strategy 𝑖𝑗𝑘 has the following payoff
+Π_𝑖𝑗𝑘 = 𝑟 / 𝐺 ∑ 𝑥∈𝑋 𝑐_𝑥 − 𝑐_𝑖𝑗𝑘 + 𝑖𝑛𝑐𝑒𝑛𝑡𝑖𝑣𝑒, (1)
+where 𝑐𝑥 is the contribution from group member 𝑥 (including the focal player 𝑖𝑗𝑘) and 𝑐𝑖𝑗𝑘 is the contribution from the focal player.
+
+A player contributes to the common pool, i.e. 𝑐𝑖𝑗𝑘 = 𝑐, if they cooperate when the commitment is formed (𝑗 = 𝐶) and the commitment
+was actually formed, or if they cooperate when the commitment is not formed (𝑘 = 𝐶) and the commitment was actually not formed.
+Otherwise, the player does not contribute. In that case, 𝑐𝑖𝑗𝑘 = 0. Without loss of generality, we set the cost of contribution 𝑐 = 1.
+The 𝑖𝑛𝑐𝑒𝑛𝑡𝑖𝑣𝑒 is provided by an institution, which can be used for rewarding commitment-compliant players (𝐴𝐶𝐶 and 𝐴𝐶𝐷)
+or punish commitment non-compliant players (𝐴𝐷𝐶 and 𝐴𝐷𝐷). The total budget allocated for providing incentives, whether as
+reward or punishment, is represented by 𝐺𝛿 per group, with 𝛿 denoting the per capita budget. We use a weight 𝜔 to define which
+incentive is being applied, with the possibility of a mixed punishment and reward. The reward part is equally divided among all
+commitment-compliant players 𝑛𝑐𝑜𝑚, resulting in an increase of 𝜔𝐺𝛿∕𝑛𝑐𝑜𝑚 in their payoff. The punishment part is equally applied to
+all 𝑛_𝑛𝑜𝑛−𝑐𝑜𝑚 commitment non-compliant players, resulting in a decrease of (1 − 𝜔)𝐺𝛿∕𝑛𝑛𝑜𝑛−𝑐𝑜𝑚 in their payoff. For clarity, we present
+a summary of all incentives in Table I.
+
+In an evolutionary step, first a random player (𝑖𝑗𝑘) is selected from the population. Its payoff is calculated according to Equation
+(1) for all groups that they participate. Then, a random neighbour (𝑖′𝑗′𝑘′) of (𝑖𝑗𝑘) is selected, and we repeat the same calculation for
+its payoff. Player (𝑖𝑗𝑘) will adopt (𝑖′𝑗′𝑘′) strategy according to a probability given by the Fermi update rule,
+𝑊𝑖𝑗𝑘→𝑖′𝑗′𝑘′ = 1 / (1 + 𝑒 −(Π𝑖′𝑗′𝑘′−Π𝑖𝑗𝑘)∕𝐾), (2)
+where 𝐾 is a noise related to irrationality. This evolutionary step is repeated 𝑁 times where 𝑁 is the population size, characterising
+one Monte Carlo step (MCS). We set the total simulation time as 𝑡 = 105 MCS which is enough for the equilibrium to be reached.
+In line with previous works [20,22,33,34], we perform our simulations on a square lattice with von Neumann neighbourhood, with
+periodic boundary conditions, size 𝑁 = 1002 and 𝐾 = 0.1. We initialise the population using a uniform distribution of the eight
+strategies. Since each player can cooperate or not according to their neighbourhood, we define the cooperation frequency as the
+number of groups in which an interacting player cooperates divided by the total number of groups 𝐺.

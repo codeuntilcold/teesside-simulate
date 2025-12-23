@@ -1,0 +1,14 @@
+- limit the plots for the POP simulation to show just what we need:
+
+  - timeseries visualization: can just put that in there first, with extension of different a values corresponding to different social welfare, highlighting the point where the minimized cost vs the maximized social welfare, can accept the cooperation level at some point maybe like > 90%
+  - heatmap: showcase for a < 1 and a > 1 it follows the previous work and shows that it is expected to have a > 1 we will have more wellfare vs cost
+  - put the figures in there and explanations
+
+- Implemet agent-simulation on Public Goods game with r = 3 (Thuong & Dung)
+- Visualise 50 runs result of PD game and add it on the manuscript (Thuong & Dung)
+- After Nam & Dat is done with exams, split up the work to run
+  - PD game experiment w/ existing parameters, but with b = 1.2 and b = 2
+  - PG game experiment w/ r = 1.5, 4.5
+  - Then visualise these results
+- Clean up and push code to Github
+
