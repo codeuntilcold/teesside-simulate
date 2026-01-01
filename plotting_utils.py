@@ -55,10 +55,20 @@ class DataLoader:
 
     @staticmethod
     def parse_numpy_array(array_str: str) -> List[float]:
-        """Parse numpy array string in wrapped format: np.int64(value)"""
+        """Parse array string - handles both np.int64(value) format and plain [1, 2, 3] format"""
+        # Try numpy format first
         pattern = r'np\.(int64|float64)\(([^)]+)\)'
         matches = re.findall(pattern, array_str)
-        return [float(val) for _, val in matches]
+        if matches:
+            return [float(val) for _, val in matches]
+
+        # Fall back to plain comma-separated format [1, 2, 3, ...]
+        array_str = array_str.strip()
+        if array_str.startswith('['):
+            array_str = array_str[1:]
+        if array_str.endswith(']'):
+            array_str = array_str[:-1]
+        return [float(x.strip()) for x in array_str.split(',') if x.strip()]
 
     @staticmethod
     def parse_plain_array(array_str: str) -> List[float]:
@@ -91,13 +101,16 @@ class DataLoader:
         return data
 
     @staticmethod
-    def load_metric_data(data_dir: str, metric: str, pc_value: str, seed: int) -> List[Dict[str, Any]]:
-        filepath = f"{data_dir}/seed_{seed}_pc={pc_value}_{metric}.csv"
+    def load_metric_data(data_dir: str, metric: str, pc_value: str, seed: int, param_name: str = 'pc', theta_range: str = None) -> List[Dict[str, Any]]:
+        if theta_range:
+            filepath = f"{data_dir}/seed_{seed}_theta_{theta_range}_{param_name}={pc_value}_{metric}.csv"
+        else:
+            filepath = f"{data_dir}/seed_{seed}_{param_name}={pc_value}_{metric}.csv"
         return DataLoader.load_csv_data(filepath)
 
     @staticmethod
-    def get_unique_theta_values(data_dir: str, pc_value: str, seed: int) -> List[float]:
-        data = DataLoader.load_metric_data(data_dir, 'cooperator_frequency', pc_value, seed)
+    def get_unique_theta_values(data_dir: str, pc_value: str, seed: int, theta_range: str = None) -> List[float]:
+        data = DataLoader.load_metric_data(data_dir, 'cooperator_frequency', pc_value, seed, theta_range=theta_range)
         return sorted(set(float(row['Theta']) for row in data))
 
     @staticmethod
@@ -140,6 +153,69 @@ class DataLoader:
 
         return DataLoader.parse_plain_array(row[column])
 
+    @staticmethod
+    def load_50run_timeseries(data_dir: str, strategy: str, param_value: str, theta_value: float) -> Dict[str, List[float]]:
+        """
+        Load pre-averaged 50-run time series data.
+
+        Args:
+            data_dir: Base directory (e.g., '50-run-data/data')
+            strategy: 'pop' or 'neb'
+            param_value: pc value for POP (e.g., '1.0') or nc value for NEB (e.g., '3')
+            theta_value: Theta value to load
+
+        Returns:
+            Dictionary with 'generation', 'cooperator_frequency', 'social_welfare', 'cost' keys
+        """
+        if strategy == 'pop':
+            filepath = f"{data_dir}/pop_pc_{param_value}_means/mean_theta_{theta_value}.csv"
+        else:  # neb
+            filepath = f"{data_dir}/neb_nc_{param_value}_means/mean_theta_{theta_value}.csv"
+
+        data = {'generation': [], 'cooperator_frequency': [], 'social_welfare': [], 'cost': []}
+
+        with open(filepath, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                data['generation'].append(int(row['Generation']))
+                data['cooperator_frequency'].append(float(row['Cooperator_Frequency']))
+                data['social_welfare'].append(float(row['Social_Welfare']))
+                data['cost'].append(float(row['Cost']))
+
+        return data
+
+    @staticmethod
+    def load_50run_heatmap_means(data_dir: str, strategy: str, param_value: str) -> Dict[str, Dict[float, float]]:
+        """
+        Load pre-averaged 50-run final values for heatmaps.
+
+        Args:
+            data_dir: Base directory (e.g., '50-run-data/data')
+            strategy: 'pop' or 'neb'
+            param_value: pc value for POP (e.g., '1') or nc value for NEB (e.g., '3')
+
+        Returns:
+            Dictionary mapping metric names to {theta: mean_value} dicts
+        """
+        if strategy == 'pop':
+            means_dir = f"{data_dir}/pop_theta_{param_value}/means"
+        else:  # neb
+            means_dir = f"{data_dir}/neb_theta_{param_value}/means"
+
+        results = {}
+        for metric in ['cooperator_frequency', 'cost', 'social_welfare']:
+            filepath = f"{means_dir}/mean_{metric}.csv"
+            results[metric] = {}
+
+            with open(filepath, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    theta = float(row['Theta'])
+                    mean_val = float(row['Mean'])
+                    results[metric][theta] = mean_val
+
+        return results
+
 
 class SimulationPlotter:
     def __init__(self, config: Optional[PlotConfig] = None):
@@ -181,12 +257,12 @@ class SimulationPlotter:
             # Auto-detect format: 1 decimal for percentages, 0 for other metrics
             annotation_fmt = '.1f' if metric == 'cooperator_frequency' else '.0f'
 
-        for i in range(len(theta_values)):
-            for j in range(len(pc_values)):
-                text = ax.text(j, i, f'{data[i, j]:{annotation_fmt}}',
-                              ha="center", va="center",
-                              color="white" if data[i, j] < data.max() * 0.5 else "black",
-                              fontsize=annotation_fontsize)
+        # for i in range(len(theta_values)):
+        #     for j in range(len(pc_values)):
+        #         text = ax.text(j, i, f'{data[i, j]:{annotation_fmt}}',
+        #                       ha="center", va="center",
+        #                       color="white" if data[i, j] < data.max() * 0.5 else "black",
+        #                       fontsize=annotation_fontsize)
 
     def plot_ijcai_figure1_grid(
         self,
@@ -195,6 +271,8 @@ class SimulationPlotter:
         theta_value: float,
         seed: int = 0,
         population_size: int = 10000,
+        param_name: str = 'pc',
+        theta_range: str = None,
         output_filename: Optional[str] = None,
         show_plot: bool = False
     ) -> str:
@@ -214,11 +292,11 @@ class SimulationPlotter:
         if n_cols == 1:
             axes = axes.reshape(-1, 1)
 
-        for col_idx, pc_value in enumerate(pc_values):
+        for col_idx, param_value in enumerate(pc_values):
             # Load data
-            coop_data = self.loader.load_metric_data(data_dir, 'cooperator_frequency', pc_value, seed)
-            cost_data = self.loader.load_metric_data(data_dir, 'cost', pc_value, seed)
-            welfare_data = self.loader.load_metric_data(data_dir, 'social_welfare', pc_value, seed)
+            coop_data = self.loader.load_metric_data(data_dir, 'cooperator_frequency', param_value, seed, param_name=param_name, theta_range=theta_range)
+            cost_data = self.loader.load_metric_data(data_dir, 'cost', param_value, seed, param_name=param_name, theta_range=theta_range)
+            welfare_data = self.loader.load_metric_data(data_dir, 'social_welfare', param_value, seed, param_name=param_name, theta_range=theta_range)
 
             # Find the row for this theta value
             coop_row = next((r for r in coop_data if abs(float(r['Theta']) - theta_value) < 0.01), None)
@@ -226,7 +304,7 @@ class SimulationPlotter:
             welfare_row = next((r for r in welfare_data if abs(float(r['Theta']) - theta_value) < 0.01), None)
 
             if not coop_row or not cost_row or not welfare_row:
-                print(f"Warning: No data for pc={pc_value}, theta={theta_value}")
+                print(f"Warning: No data for {param_name}={param_value}, theta={theta_value}")
                 continue
 
             # Parse data
@@ -267,8 +345,8 @@ class SimulationPlotter:
                     costs = costs[:actual_len] + [costs[actual_len-1]] * (self.config.max_generations - actual_len)
                     welfare = welfare[:actual_len] + [welfare[actual_len-1]] * (self.config.max_generations - actual_len)
 
-            # For pc=1.0, cost should be 0 after full cooperation is reached
-            if pc_value == "1.0" and full_coop_idx is not None:
+            # For pc=1.0 (or nc=4), cost should be 0 after full cooperation is reached
+            if param_value in ["1.0", "4"] and full_coop_idx is not None:
                 # Set cost to 0 from the point of full cooperation onward
                 costs = costs[:full_coop_idx + 1] + [0.0] * (self.config.max_generations - full_coop_idx - 1)
 
@@ -300,7 +378,7 @@ class SimulationPlotter:
             if col_idx == n_cols - 1:
                 ax_freq.legend(loc='upper right', fontsize=8, frameon=True, fancybox=False)
 
-            ax_freq.set_title(f'pc={pc_value}', fontsize=11, fontweight='bold')
+            ax_freq.set_title(f'{param_name}={param_value}', fontsize=11, fontweight='bold')
 
             # Row 1: Cost
             ax_cost = axes[1, col_idx]
@@ -334,6 +412,153 @@ class SimulationPlotter:
 
         plt.savefig(output_filename, dpi=self.config.dpi, bbox_inches='tight')
         print(f"IJCAI Figure 1 grid plot saved to: {output_filename}")
+
+        if show_plot:
+            plt.show()
+        else:
+            plt.close()
+
+        return output_filename
+
+    def plot_ijcai_figure1_grid_multiseed(
+        self,
+        data_dir: str,
+        pc_values: List[str],
+        theta_value: float,
+        seeds: List[int],
+        population_size: int = 10000,
+        param_name: str = 'pc',
+        theta_range: str = None,
+        show_std: bool = True,
+        output_filename: Optional[str] = None,
+        show_plot: bool = False
+    ) -> str:
+        """Plot time series averaged across multiple seeds with optional std shading."""
+        n_cols = len(pc_values)
+
+        C_COLOR = self.config.IJCAI_COLORS['cooperator']
+        D_COLOR = self.config.IJCAI_COLORS['defector']
+        COST_COLOR = self.config.IJCAI_COLORS['cost']
+        WELFARE_COLOR = self.config.IJCAI_COLORS['welfare']
+
+        fig, axes = plt.subplots(3, n_cols, figsize=(4*n_cols, 6),
+                                gridspec_kw={'hspace': 0.3, 'wspace': 0.25})
+
+        if n_cols == 1:
+            axes = axes.reshape(-1, 1)
+
+        for col_idx, param_value in enumerate(pc_values):
+            # Collect data from all seeds
+            all_coop = []
+            all_costs = []
+            all_welfare = []
+
+            for seed in seeds:
+                try:
+                    coop_data = self.loader.load_metric_data(data_dir, 'cooperator_frequency', param_value, seed, param_name=param_name, theta_range=theta_range)
+                    cost_data = self.loader.load_metric_data(data_dir, 'cost', param_value, seed, param_name=param_name, theta_range=theta_range)
+                    welfare_data = self.loader.load_metric_data(data_dir, 'social_welfare', param_value, seed, param_name=param_name, theta_range=theta_range)
+
+                    coop_row = next((r for r in coop_data if abs(float(r['Theta']) - theta_value) < 0.01), None)
+                    cost_row = next((r for r in cost_data if abs(float(r['Theta']) - theta_value) < 0.01), None)
+                    welfare_row = next((r for r in welfare_data if abs(float(r['Theta']) - theta_value) < 0.01), None)
+
+                    if coop_row and cost_row and welfare_row:
+                        coop_counts = self.loader.parse_numpy_array(coop_row['Cooperator_Frequency'])
+                        costs = self.loader.parse_numpy_array(cost_row['Cost'])
+                        welfare = self.loader.parse_numpy_array(welfare_row['Social_Welfare'])
+
+                        # Pad/truncate to max_generations
+                        coop_counts = (coop_counts + [coop_counts[-1]] * self.config.max_generations)[:self.config.max_generations]
+                        costs = (costs + [costs[-1]] * self.config.max_generations)[:self.config.max_generations]
+                        welfare = (welfare + [welfare[-1]] * self.config.max_generations)[:self.config.max_generations]
+
+                        all_coop.append(coop_counts)
+                        all_costs.append(costs)
+                        all_welfare.append(welfare)
+                except FileNotFoundError:
+                    continue
+
+            if not all_coop:
+                print(f"Warning: No data for {param_name}={param_value}, theta={theta_value}")
+                continue
+
+            # Convert to numpy and compute mean/std
+            all_coop = np.array(all_coop)
+            all_costs = np.array(all_costs)
+            all_welfare = np.array(all_welfare)
+
+            mean_coop = np.mean(all_coop, axis=0)
+            mean_costs = np.mean(all_costs, axis=0)
+            mean_welfare = np.mean(all_welfare, axis=0)
+
+            std_coop = np.std(all_coop, axis=0)
+            std_costs = np.std(all_costs, axis=0)
+            std_welfare = np.std(all_welfare, axis=0)
+
+            generations = range(self.config.max_generations)
+            c_percentage = (mean_coop / population_size) * 100
+            c_std_pct = (std_coop / population_size) * 100
+
+            # Row 0: Frequency
+            ax_freq = axes[0, col_idx]
+            ax_freq.fill_between(generations, 0, c_percentage, color=C_COLOR, alpha=1.0,
+                                linewidth=0.5, edgecolor=C_COLOR, label='C')
+            ax_freq.fill_between(generations, c_percentage, 100, color=D_COLOR, alpha=1.0,
+                                linewidth=0.5, edgecolor=D_COLOR, label='D')
+            if show_std:
+                ax_freq.fill_between(generations, c_percentage - c_std_pct, c_percentage + c_std_pct,
+                                    color='white', alpha=0.3)
+            ax_freq.set_ylim(0, 100)
+            ax_freq.set_xlim(0, self.config.max_generations)
+            ax_freq.set_yticks([0, 20, 40, 60, 80, 100])
+            ax_freq.set_xticks([0, 10, 20, 30, 40, self.config.max_generations])
+            ax_freq.tick_params(labelsize=8)
+            ax_freq.grid(True, alpha=0.35, linewidth=0.5, color='gray')
+
+            if col_idx == 0:
+                ax_freq.set_ylabel('frequency', fontsize=10)
+            if col_idx == n_cols - 1:
+                ax_freq.legend(loc='upper right', fontsize=8, frameon=True, fancybox=False)
+
+            ax_freq.set_title(f'{param_name}={param_value}', fontsize=11, fontweight='bold')
+
+            # Row 1: Cost
+            ax_cost = axes[1, col_idx]
+            ax_cost.fill_between(generations, mean_costs, color=COST_COLOR, alpha=1.0,
+                                linewidth=0.5, edgecolor=COST_COLOR)
+            if show_std:
+                ax_cost.fill_between(generations, mean_costs - std_costs, mean_costs + std_costs,
+                                    color=COST_COLOR, alpha=0.3)
+            ax_cost.set_xlim(0, self.config.max_generations)
+            ax_cost.set_xticks([0, 10, 20, 30, 40, self.config.max_generations])
+            ax_cost.tick_params(labelsize=8)
+            ax_cost.grid(True, alpha=0.35, linewidth=0.5, color='gray')
+
+            if col_idx == 0:
+                ax_cost.set_ylabel('cost', fontsize=10)
+
+            # Row 2: Social Welfare
+            ax_welfare = axes[2, col_idx]
+            ax_welfare.fill_between(generations, mean_welfare, color=WELFARE_COLOR, alpha=0.8,
+                                   linewidth=0.5)
+            if show_std:
+                ax_welfare.fill_between(generations, mean_welfare - std_welfare, mean_welfare + std_welfare,
+                                       color=WELFARE_COLOR, alpha=0.3)
+            ax_welfare.set_xlim(0, self.config.max_generations)
+            ax_welfare.set_xlabel('generation', fontsize=10)
+            ax_welfare.set_xticks([0, 10, 20, 30, 40, self.config.max_generations])
+            ax_welfare.tick_params(labelsize=8)
+            ax_welfare.grid(True, alpha=0.35, linewidth=0.5, color='gray')
+
+            if col_idx == 0:
+                ax_welfare.set_ylabel('SW (a=1)', fontsize=10)
+
+        if output_filename is None:
+            output_filename = f"{data_dir}/ijcai_fig1_grid_theta{theta_value}_seeds{seeds[0]}-{seeds[-1]}.png"
+
+        plt.savefig(output_filename, dpi=self.config.dpi, bbox_inches='tight')
+        print(f"IJCAI Figure 1 grid (multi-seed avg) saved to: {output_filename}")
 
         if show_plot:
             plt.show()
@@ -489,13 +714,16 @@ class SimulationPlotter:
         pc_values: List[str],
         theta_values: List[float],
         seeds: List[int],
+        param_name: str = 'pc',
+        theta_range: str = None,
+        output_dir: str = 'fig',
         output_prefix: str = 'ijcai_fig2_multiseed',
         show_plot: bool = False
     ) -> Tuple[str, str]:
         # Define metrics with aggregation strategy
         metrics_config = {
             'cooperator_frequency': {'aggregation': 'final', 'label': 'Cooperation Frequency (%)'},
-            'cost': {'aggregation': 'sum', 'label': 'Total Cost'},
+            'cost': {'aggregation': 'final', 'label': 'Cost'},
             'social_welfare': {'aggregation': 'final', 'label': 'Social Welfare'}
         }
 
@@ -511,7 +739,7 @@ class SimulationPlotter:
             for pc_idx, pc in enumerate(pc_values):
                 for metric, config in metrics_config.items():
                     try:
-                        metric_data = self.loader.load_metric_data(data_dir, metric, pc, seed)
+                        metric_data = self.loader.load_metric_data(data_dir, metric, pc, seed, param_name=param_name, theta_range=theta_range)
 
                         for theta_idx, theta in enumerate(theta_values):
                             row = next((r for r in metric_data
@@ -560,7 +788,7 @@ class SimulationPlotter:
 
         plt.tight_layout()
 
-        output_mean = f'{data_dir}/{output_prefix}_mean_seeds{seeds[0]}-{seeds[-1]}.png'
+        output_mean = f'{output_dir}/{output_prefix}_mean_seeds{seeds[0]}-{seeds[-1]}.png'
         plt.savefig(output_mean, dpi=self.config.dpi, bbox_inches='tight')
         print(f"Mean heatmap saved to: {output_mean}")
 
@@ -591,7 +819,7 @@ class SimulationPlotter:
 
         plt.tight_layout()
 
-        output_std = f'{data_dir}/{output_prefix}_std_seeds{seeds[0]}-{seeds[-1]}.png'
+        output_std = f'{output_dir}/{output_prefix}_std_seeds{seeds[0]}-{seeds[-1]}.png'
         plt.savefig(output_std, dpi=self.config.dpi, bbox_inches='tight')
         print(f"Std Dev heatmap saved to: {output_std}")
 
@@ -608,14 +836,17 @@ class SimulationPlotter:
         pc_values: List[str],
         seeds: List[int],
         a_values: List[float] = [0.5, 0.75, 1.0, 1.5, 2.0],
-        theta_range: Tuple[float, float] = (4.0, 5.0),
+        theta_filter: Tuple[float, float] = (4.0, 5.0),
+        param_name: str = 'pc',
+        theta_range: str = None,
+        output_dir: str = 'fig',
         output_filename: Optional[str] = None,
         show_plot: bool = False
     ) -> str:
         # Get theta values from first available data file
-        all_theta_values = self.loader.get_unique_theta_values(data_dir, pc_values[0], seeds[0])
+        all_theta_values = self.loader.get_unique_theta_values(data_dir, pc_values[0], seeds[0], theta_range=theta_range)
         # Filter to specified range
-        theta_values = [t for t in all_theta_values if theta_range[0] <= t <= theta_range[1]]
+        theta_values = [t for t in all_theta_values if theta_filter[0] <= t <= theta_filter[1]]
 
         print(f"Loading data for {len(seeds)} seeds × {len(theta_values)} theta × {len(pc_values)} pc...")
 
@@ -628,7 +859,7 @@ class SimulationPlotter:
             for pc_idx, pc in enumerate(pc_values):
                 for metric in metrics:
                     try:
-                        metric_data = self.loader.load_metric_data(data_dir, metric, pc, seed)
+                        metric_data = self.loader.load_metric_data(data_dir, metric, pc, seed, param_name=param_name, theta_range=theta_range)
 
                         for theta_idx, theta in enumerate(theta_values):
                             row = next((r for r in metric_data if abs(float(r['Theta']) - theta) < 0.01), None)
@@ -728,7 +959,7 @@ class SimulationPlotter:
 
         # Save plot
         if output_filename is None:
-            output_filename = f"{data_dir}/efficiency_comparison_seeds{seeds[0]}-{seeds[-1]}.png"
+            output_filename = f"{output_dir}/efficiency_comparison_seeds{seeds[0]}-{seeds[-1]}.png"
 
         plt.savefig(output_filename, dpi=self.config.dpi, bbox_inches='tight')
         print(f"Efficiency comparison plot saved to: {output_filename}")

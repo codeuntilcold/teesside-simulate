@@ -17,7 +17,8 @@ def main():
         pc_values=pc_values,
         seeds=seeds,
         a_values=a_values,
-        theta_range=(4.0, 5.0)
+        theta_filter=(4.0, 5.0),
+        output_dir='fig'
     )
 
     print(f"{output_file=}")

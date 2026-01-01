@@ -15,6 +15,7 @@ def main():
         pc_values=pc_values,
         theta_values=theta_values,
         seeds=seeds,
+        output_dir='fig',
         output_prefix='ijcai_fig2_multiseed'
     )
 

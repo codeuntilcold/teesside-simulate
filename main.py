@@ -2,6 +2,7 @@ from interference_agent import neb, pop
 from utils import fermi, calculate_fitness, visualize_population, save_figure
 from update import update_population, simulate_population
 
+import os
 import numpy as np
 import pandas as pd
 # import tkinter as tk
@@ -47,6 +48,7 @@ def __main__():
     parser.add_argument('--nc', type=int, default=4, help='Number of cooperators for NEB strategy')
     parser.add_argument('--pc', type=float, default=0.75, help='Cooperation threshold for POP strategy')
     parser.add_argument('--game-type', type=str, default='pd', choices=['pd', 'pgg'], help='Game type: pd (Prisoner\'s Dilemma) or pgg (Public Goods Game)')
+    parser.add_argument('--b', type=float, default=1.8, help='Temptation payoff (beta) for Prisoner\'s Dilemma')
     parser.add_argument('--r', type=float, default=3.0, help='Multiplication factor for Public Goods Game')
     parser.add_argument('--seed-start', type=int, default=0, help='Starting seed for simulations')
     parser.add_argument('--seed-end', type=int, default=10, help='Ending seed for simulations')
@@ -56,6 +58,7 @@ def __main__():
     pc = args.pc
     nc = args.nc
     game_type = args.game_type
+    b = args.b
     r = args.r
     seed_start = args.seed_start
     seed_end = args.seed_end
@@ -78,7 +81,7 @@ def __main__():
         for theta in tqdm(theta_list, desc=f'Seed {seed}'):
             final_population, history_frequency, history_fitness, history_cost, history_social_welfare = simulate_population(
                 a=a, generations=250, strategy=strategy, nc=nc, pc=pc, theta=theta,
-                game_type=game_type, r=r,
+                beta=b, game_type=game_type, r=r,
                 save_figures=False, show_final_population=False, save_data=False)
 
             res_freq.append((seed, theta, a, [int(x) for x in history_frequency]))
@@ -86,17 +89,39 @@ def __main__():
             res_cost.append((seed, theta, a, [float(x) for x in history_cost]))
             res_fitness.append((seed, theta, a, [float(x) for x in history_fitness]))
 
+        # Use strategy and game-type specific directory
+        if strategy == 'pop':
+            if game_type == 'pgg':
+                data_dir = f'data/{strategy}_theta_pgg_{r=}'
+            else:
+                data_dir = f'data/{strategy}_theta_pd_{b=}'
+            param_str = f'{pc=}'
+        elif strategy == 'neb':
+            if game_type == 'pgg':
+                data_dir = f'data/{strategy}_theta_pgg_{r=}'
+            else:
+                data_dir = f'data/{strategy}_theta_pd_{b=}'
+            param_str = f'{nc=}'
+        else:
+            if game_type == 'pgg':
+                data_dir = f'data/{strategy}_theta_pgg_{r=}'
+            else:
+                data_dir = f'data/{strategy}_theta_pd_{b=}'
+            param_str = f'{pc=}'
+
+        os.makedirs(data_dir, exist_ok=True)
+
         df = pd.DataFrame(res_freq, columns=['Seed', 'Theta', 'A', 'Cooperator_Frequency'])
-        df.to_csv(f'data/pop_theta/seed_{seed}_{pc=}_cooperator_frequency.csv', index=False)
+        df.to_csv(f'{data_dir}/seed_{seed}_{param_str}_cooperator_frequency.csv', index=False)
 
         df = pd.DataFrame(res_social_welfare, columns=['Seed', 'Theta', 'A', 'Social_Welfare'])
-        df.to_csv(f'data/pop_theta/seed_{seed}_{pc=}_social_welfare.csv', index=False)
+        df.to_csv(f'{data_dir}/seed_{seed}_{param_str}_social_welfare.csv', index=False)
 
         df = pd.DataFrame(res_cost, columns=['Seed', 'Theta', 'A', 'Cost'])
-        df.to_csv(f'data/pop_theta/seed_{seed}_{pc=}_cost.csv', index=False)
+        df.to_csv(f'{data_dir}/seed_{seed}_{param_str}_cost.csv', index=False)
 
         df = pd.DataFrame(res_fitness, columns=['Seed', 'Theta', 'A', 'Payoff'])
-        df.to_csv(f'data/pop_theta/seed_{seed}_{pc=}_population_payoff.csv', index=False)
+        df.to_csv(f'{data_dir}/seed_{seed}_{param_str}_population_payoff.csv', index=False)
     
     
     # # Compare different neb strategies
