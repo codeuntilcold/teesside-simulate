@@ -709,3 +709,155 @@ class SimulationPlotter:
             plt.show()
 
         return output_filename
+
+    def plot_diff_plot_from_agg(
+        self,
+        data_matrices: Dict[str, np.ndarray],
+        strategy_params: List[str],
+        theta_values: List[float],
+        a_values: List[float],
+        title: str = '',
+        output_filename: Optional[str] = None,
+        show_plot: bool = False
+    ):
+        """
+        Plot different line plot from pre-aggregated final values.
+
+        Args:
+            data_matrices: {'cost': array, 'welfare': array, 'coop_freq': array} with shape [theta, param]
+            strategy_params: List of strategy param labels
+            theta_values: List of theta values
+            title: Plot title
+        """
+        
+        if 'pc' in strategy_params[0]: # plot for POP
+            return self._plot_diff_plot_from_agg_pop(
+                data_matrices, strategy_params, theta_values, a_values, title, output_filename, show_plot
+            )
+        return self._plot_diff_plot_from_agg_neb(
+            data_matrices, strategy_params, theta_values, a_values, title, output_filename, show_plot
+        )
+
+    def _plot_diff_plot_from_agg_pop(
+        self,
+        data_matrices: Dict[str, np.ndarray],
+        strategy_params: List[str],
+        theta_values: List[float],
+        a_values: List[float],
+        title: str = '',
+        output_filename: Optional[str] = None,
+        show_plot: bool = False
+    ):
+        """
+        Plot POP line plot from pre-aggregated final values.
+
+        Args:
+            data_matrices: {'cost': array, 'welfare': array, 'coop_freq': array} with shape [theta, param]
+            strategy_params: List of strategy param labels
+            theta_values: List of theta values
+            title: Plot title
+        """
+        n_cols = len(a_values)
+        fig, axes = plt.subplots(1, n_cols, figsize=(15, 4))
+
+        for i, a in enumerate(a_values):
+            cost_a = data_matrices['cost'] / a
+            welfare_a = data_matrices['welfare'] - cost_a
+            coop_freq_nc3_to_compare = data_matrices['coop_freq'][:, len(strategy_params) - 1]
+            cost_nc3_to_compare = cost_a[:, len(strategy_params) - 1]
+            sw_nc3_to_compare = welfare_a[:, len(strategy_params) - 1]
+            cost_nc3_min = theta_values[np.where(coop_freq_nc3_to_compare > 90)[0][0]]
+            sw_nc3_max = theta_values[np.where(sw_nc3_to_compare/max(sw_nc3_to_compare) == 1)[0][0]]
+
+            axes[i].plot(sorted(theta_values), cost_nc3_to_compare/max(cost_nc3_to_compare), color='red', label='Total Cost')
+            axes[i].plot(sorted(theta_values), sw_nc3_to_compare/max(sw_nc3_to_compare), label='Social Welfare')
+            axes[i].axhline(0.9, xmin=(0.2)/(sw_nc3_max - cost_nc3_min + 0.4), xmax=(sw_nc3_max-cost_nc3_min+0.2)/(sw_nc3_max - cost_nc3_min + 0.4), color ='green', linestyle='--')
+            axes[i].axvline(cost_nc3_min, linestyle='--', color='red')
+            axes[i].axvline(sw_nc3_max, linestyle='--')
+            axes[i].text(cost_nc3_min+0.01, 0.5, round(cost_nc3_min, 1), rotation=90, va='center')
+            axes[i].text(sw_nc3_max+0.01, 0.5, round(sw_nc3_max, 1), rotation=90, va='center')
+            axes[i].text((cost_nc3_min + sw_nc3_max)/2, 0.92, 'Δθ', va='center')
+            axes[i].plot([cost_nc3_min], [0.9], color='green', marker="o")
+            axes[i].plot([sw_nc3_max], [0.9], color='green', marker="o")
+            axes[i].set_xlim(cost_nc3_min - 0.2, sw_nc3_max + 0.2)
+            axes[i].set_ylim(0, 1.1)
+            axes[i].set_xlabel('Per-individual investment cost, θ', fontsize=self.config.label_fontsize)
+            axes[i].set_ylabel('Normalized Value', fontsize=self.config.label_fontsize)
+            axes[i].set_title(f'{strategy_params[len(strategy_params) - 1]}', fontsize=self.config.title_fontsize, fontweight='bold')
+
+        handles, labels = axes[0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc='upper center', ncol=3, bbox_to_anchor=(0.5, 1))
+        
+        if title:
+            fig.suptitle(title, fontsize=14, y=1.05)
+        
+        plt.tight_layout()
+
+        if output_filename:
+            save_figure(fig, output_filename, self.config.dpi, show_plot)
+        else:
+            plt.show()
+
+        return output_filename
+
+    def _plot_diff_plot_from_agg_neb(
+        self,
+        data_matrices: Dict[str, np.ndarray],
+        strategy_params: List[str],
+        theta_values: List[float],
+        a_values: List[float],
+        title: str = '',
+        output_filename: Optional[str] = None,
+        show_plot: bool = False
+    ):
+        """
+        Plot NEB line plot from pre-aggregated final values.
+
+        Args:
+            data_matrices: {'cost': array, 'welfare': array, 'coop_freq': array} with shape [theta, param]
+            strategy_params: List of strategy param labels
+            theta_values: List of theta values
+            title: Plot title
+        """
+        n_cols = len(a_values)
+        n_rows = 2 # Plot for nc=3 and nc=4
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 8))
+        for i in range(n_rows):
+            for j in range(n_cols):
+                a = a_values[j]
+                cost_a = data_matrices['cost'] / a
+                welfare_a = data_matrices['welfare'] - cost_a
+                coop_freq_nc3_to_compare = data_matrices['coop_freq'][:, len(strategy_params) - 2 + i]
+                cost_nc3_to_compare = cost_a[:, len(strategy_params) - 2 + i]
+                sw_nc3_to_compare = welfare_a[:, len(strategy_params) - 2 + i]
+                cost_nc3_min = theta_values[np.where(coop_freq_nc3_to_compare > 90)[0][0]]
+                sw_nc3_max = theta_values[np.where(sw_nc3_to_compare/max(sw_nc3_to_compare) == 1)[0][0]]
+                axes[i][j].plot(sorted(theta_values), cost_nc3_to_compare/max(cost_nc3_to_compare), color='red', label='Total Cost')
+                axes[i][j].plot(sorted(theta_values), sw_nc3_to_compare/max(sw_nc3_to_compare), label='Social Welfare')
+                axes[i][j].axhline(0.9, xmin=(0.2)/(sw_nc3_max - cost_nc3_min + 0.4), xmax=(sw_nc3_max-cost_nc3_min+0.2)/(sw_nc3_max - cost_nc3_min + 0.4), color ='green', linestyle='--')
+                axes[i][j].axvline(cost_nc3_min, linestyle='--', color='red')
+                axes[i][j].axvline(sw_nc3_max, linestyle='--')
+                axes[i][j].text(cost_nc3_min+0.01, 0.5, round(cost_nc3_min, 1), rotation=90, va='center')
+                axes[i][j].text(sw_nc3_max+0.01, 0.5, round(sw_nc3_max, 1), rotation=90, va='center')
+                axes[i][j].text((cost_nc3_min + sw_nc3_max)/2, 0.92, 'Δθ', va='center')
+                axes[i][j].plot([cost_nc3_min], [0.9], color='green', marker="o")
+                axes[i][j].plot([sw_nc3_max], [0.9], color='green', marker="o")
+                axes[i][j].set_xlim(cost_nc3_min - 0.2, sw_nc3_max + 0.2)
+                axes[i][j].set_xlabel('Per-individual investment cost, θ', fontsize=self.config.label_fontsize)
+                axes[i][j].set_ylabel('Normalized Value', fontsize=self.config.label_fontsize)
+                axes[i][j].set_title(f'{strategy_params[len(strategy_params) - 2 + i]}, a={a}', fontsize=self.config.title_fontsize, fontweight='bold')
+
+        handles, labels = axes[0][0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc='upper center', ncol=3, bbox_to_anchor=(0.5, 1))
+        
+        if title:
+            fig.suptitle(title, fontsize=14, y=1.05)
+        
+        plt.tight_layout()
+
+        if output_filename:
+            save_figure(fig, output_filename, self.config.dpi, show_plot)
+        else:
+            plt.show()
+
+        return output_filename

@@ -51,4 +51,13 @@ python plot_from_agg.py --agg-dir data_agg_go --fig-prefix go --game pgg --strat
 python plot_from_agg.py --agg-dir data_agg_go --fig-prefix go --game pgg --strategy neb --game-param 'r=4.5' --plot-type timeseries --theta 4.5 &
 python plot_from_agg.py --agg-dir data_agg_go --fig-prefix go --game pgg --strategy neb --game-param 'r=4.5' --plot-type efficiency &
 
+### PGG -- DIFF
+python plot_from_agg.py --agg-dir data_agg_go --fig-prefix go --game pgg --strategy pop --game-param 'r=1.5' --plot-type diff &
+python plot_from_agg.py --agg-dir data_agg_go --fig-prefix go --game pgg --strategy pop --game-param 'r=3.0' --plot-type diff &
+python plot_from_agg.py --agg-dir data_agg_go --fig-prefix go --game pgg --strategy pop --game-param 'r=4.5' --plot-type diff &
+
+python plot_from_agg.py --agg-dir data_agg_go --fig-prefix go --game pgg --strategy neb --game-param 'r=1.5' --plot-type diff &
+python plot_from_agg.py --agg-dir data_agg_go --fig-prefix go --game pgg --strategy neb --game-param 'r=3.0' --plot-type diff &
+python plot_from_agg.py --agg-dir data_agg_go --fig-prefix go --game pgg --strategy neb --game-param 'r=4.5' --plot-type diff &
+
 wait

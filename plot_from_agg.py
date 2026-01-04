@@ -86,6 +86,27 @@ def build_efficiency_matrices(agg_dir, game_type, strategy, game_param, strategy
 
     return {'cost': cost_matrix, 'welfare_base': welfare_base}, thetas
 
+def build_diff_matrices(agg_dir, game_type, strategy, game_param, strategy_params):
+    """Build cost, welfare_base and cooperator frequency matrices for diff line plot comparison."""
+    # Get cost (final value)
+    cost_matrix, thetas = build_heatmap_matrix(
+        agg_dir, game_type, strategy, game_param, strategy_params, 'cost', population_size=1
+    )
+    # Get social welfare (final value)
+    welfare_matrix, _ = build_heatmap_matrix(
+        agg_dir, game_type, strategy, game_param, strategy_params, 'social_welfare', population_size=1
+    )
+    # Get cooperator frequency (final value)
+    freq_matrix, _ = build_heatmap_matrix(
+        agg_dir, game_type, strategy, game_param, strategy_params, 'cooperator_frequency'
+    )
+
+    # welfare_base = payoff = social_welfare + cost (at a=1)
+    # For efficiency comparison: welfare_a = welfare_base - (cost / a)
+    welfare_base = welfare_matrix + cost_matrix
+
+    return {'cost': cost_matrix, 'welfare': welfare_base, 'coop_freq': freq_matrix}, thetas
+
 
 def plot_efficiency_heatmap(agg_dir, game_type, strategy, game_param, strategy_params, a_values, output_file=None):
     """Load data and plot efficiency heatmap grid for different 'a' values."""
@@ -95,6 +116,14 @@ def plot_efficiency_heatmap(agg_dir, game_type, strategy, game_param, strategy_p
     plotter = SimulationPlotter()
     plotter.plot_heatmap_grid_from_agg(data_matrices, strategy_params, thetas, a_values, title, output_file)
 
+def plot_diff_line_chart(agg_dir, game_type, strategy, game_param, strategy_params, a_values, output_file=None):
+    """Load data and plot diff line chart grid for different 'a' values."""
+    data_matrices, thetas = build_diff_matrices(agg_dir, game_type, strategy, game_param, strategy_params)
+    title = f"Diff Comparison - {game_type.upper()} {strategy.upper()} {game_param}"
+
+    plotter = SimulationPlotter()
+    plotter.plot_diff_plot_from_agg(data_matrices, strategy_params, thetas, a_values, title, output_file)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Plot from aggregated data.')
@@ -102,7 +131,7 @@ if __name__ == "__main__":
     parser.add_argument('--game', required=True, choices=['pd', 'pgg'], help='Game type')
     parser.add_argument('--strategy', required=True, choices=['pop', 'neb'], help='Strategy')
     parser.add_argument('--game-param', required=True, help='e.g. r=3 or b=1.8')
-    parser.add_argument('--plot-type', required=True, choices=['timeseries', 'heatmap', 'efficiency'], help='Plot type')
+    parser.add_argument('--plot-type', required=True, choices=['timeseries', 'heatmap', 'efficiency', 'diff'], help='Plot type')
     parser.add_argument('--theta', type=float, help='Theta value (for timeseries)')
     parser.add_argument('--metric', default='cooperator_frequency', help='Metric (for heatmap)')
     parser.add_argument('--a-values', type=float, nargs='+', default=[0.5, 1, 1.5], help='Efficiency values (for efficiency plot)')
@@ -118,7 +147,7 @@ if __name__ == "__main__":
 
     # Filter params based on plot type (POP only)
     if args.strategy == 'pop':
-        if args.plot_type == 'timeseries':
+        if args.plot_type == 'timeseries' or args.plot_type == 'diff':
             # Timeseries: only 0.25, 0.5, 0.75, 1.0
             allowed = {0.25, 0.5, 0.75, 1.0}
             strategy_params = [p for p in all_params if float(p.split('=')[1]) in allowed]
@@ -156,3 +185,7 @@ if __name__ == "__main__":
         a_str = '_'.join(str(a) for a in args.a_values)
         output_file = args.output or f"{output_dir}/{args.game}_{args.strategy}_{args.game_param}_efficiency_a={a_str}.png"
         plot_efficiency_heatmap(args.agg_dir, args.game, args.strategy, args.game_param, strategy_params, args.a_values, output_file)
+    elif args.plot_type == 'diff':
+        a_str = '_'.join(str(a) for a in args.a_values)
+        output_file = args.output or f"{output_dir}/{args.game}_{args.strategy}_{args.game_param}_diff_a={a_str}.png"
+        plot_diff_line_chart(args.agg_dir, args.game, args.strategy, args.game_param, strategy_params, args.a_values, output_file)
