@@ -28,6 +28,9 @@ class PlotConfig:
     tick_fontsize: int = 8
     title_fontsize: int = 11
 
+    color_map = "plasma"
+    color_interp = "bilinear"
+
 
 class DataLoader:
     """Handles loading and parsing simulation data from CSV files."""
@@ -348,9 +351,9 @@ class SimulationPlotter:
         return output_filename
 
     def _plot_heatmap(self, ax, data: np.ndarray, x_values: List[str], y_values: List[float],
-                      title: str, xlabel: str, ylabel: str, colorbar_label: str, cmap: str = 'plasma'):
+                      title: str, xlabel: str, ylabel: str, colorbar_label: str):
         """Plot a single heatmap."""
-        im = ax.imshow(data, aspect='auto', cmap=cmap, origin='lower')
+        im = ax.imshow(data, aspect='auto', cmap=self.config.color_map, origin='lower', interpolation=self.config.color_interp)
 
         ax.set_xticks(np.arange(len(x_values)))
         ax.set_xticklabels([f'{float(x):.2f}' for x in x_values])
@@ -623,7 +626,7 @@ class SimulationPlotter:
 
             # Row 0: Cost
             ax_cost = axes[0, col_idx]
-            im_cost = ax_cost.imshow(cost_a, aspect='auto', cmap='plasma', origin='lower')
+            im_cost = ax_cost.imshow(cost_a, aspect='auto', cmap=self.config.color_map, origin='lower', interpolation=self.config.color_interp)
             ax_cost.set_title(f'a = {a}', fontsize=self.config.title_fontsize, fontweight='bold')
             ax_cost.set_xticks(range(len(strategy_params)))
             ax_cost.set_xticklabels([sp.split('=')[1] for sp in strategy_params], fontsize=8)
@@ -637,7 +640,7 @@ class SimulationPlotter:
 
             # Row 1: Social Welfare
             ax_welfare = axes[1, col_idx]
-            im_welfare = ax_welfare.imshow(welfare_a, aspect='auto', cmap='plasma', origin='lower')
+            im_welfare = ax_welfare.imshow(welfare_a, aspect='auto', cmap=self.config.color_map, origin='lower', interpolation=self.config.color_interp)
             ax_welfare.set_xlabel('p_C', fontsize=self.config.label_fontsize)
             ax_welfare.set_xticks(range(len(strategy_params)))
             ax_welfare.set_xticklabels([sp.split('=')[1] for sp in strategy_params], fontsize=8)
@@ -681,7 +684,7 @@ class SimulationPlotter:
         """
         fig, ax = plt.subplots(figsize=(8, 6))
 
-        im = ax.imshow(data_matrix, aspect='auto', cmap='plasma', origin='lower')
+        im = ax.imshow(data_matrix, aspect='auto', cmap=self.config.color_map, origin='lower', interpolation=self.config.color_interp)
 
         ax.set_xticks(range(len(strategy_params)))
         ax.set_xticklabels([sp.split('=')[1] for sp in strategy_params])

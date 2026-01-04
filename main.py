@@ -90,6 +90,7 @@ def __main__():
             res_fitness.append((seed, theta, a, [float(x) for x in history_fitness]))
 
         # Use strategy and game-type specific directory
+        data_dir = f'data/{strategy}_theta_{game_type}'
         if strategy == 'pop':
             if game_type == 'pgg':
                 data_dir = f'data/{strategy}_theta_pgg_{r=}'
@@ -103,27 +104,24 @@ def __main__():
                 data_dir = f'data/{strategy}_theta_pd_{b=}'
             param_str = f'{nc=}'
         else:
-            if game_type == 'pgg':
-                data_dir = f'data/{strategy}_theta_pgg_{r=}'
-            else:
-                data_dir = f'data/{strategy}_theta_pd_{b=}'
             param_str = f'{pc=}'
 
         os.makedirs(data_dir, exist_ok=True)
 
+
         df = pd.DataFrame(res_freq, columns=['Seed', 'Theta', 'A', 'Cooperator_Frequency'])
-        df.to_csv(f'{data_dir}/seed_{seed}_{param_str}_cooperator_frequency.csv', index=False)
+        df.to_csv(f'{file_prefix}_cooperator_frequency.csv', index=False)
 
         df = pd.DataFrame(res_social_welfare, columns=['Seed', 'Theta', 'A', 'Social_Welfare'])
-        df.to_csv(f'{data_dir}/seed_{seed}_{param_str}_social_welfare.csv', index=False)
+        df.to_csv(f'{file_prefix}_social_welfare.csv', index=False)
 
         df = pd.DataFrame(res_cost, columns=['Seed', 'Theta', 'A', 'Cost'])
-        df.to_csv(f'{data_dir}/seed_{seed}_{param_str}_cost.csv', index=False)
+        df.to_csv(f'{file_prefix}_cost.csv', index=False)
 
         df = pd.DataFrame(res_fitness, columns=['Seed', 'Theta', 'A', 'Payoff'])
-        df.to_csv(f'{data_dir}/seed_{seed}_{param_str}_population_payoff.csv', index=False)
-    
-    
+        df.to_csv(f'{file_prefix}_population_payoff.csv', index=False)
+
+
     # # Compare different neb strategies
     # neb_4 = []
     # neb_3 = []
