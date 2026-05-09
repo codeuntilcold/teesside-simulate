@@ -1,9 +1,10 @@
 """Plot θ* (theta for optimal social welfare and cost) summary across all experiments."""
 import argparse
 import os
+from typing import List
 import numpy as np
-from plot_from_agg import detect_strategy_params, build_diff_matrices
-from plotting_utils_v2 import SimulationPlotter
+from plot_from_agg import detect_strategy_params, build_metric_matrices
+from plotting_utils_v2 import plot_optimal_theta_summary, MetricMatrices, OptimalRecord
 
 GAMES = {
     'pd': {'params': ['b=1.2', 'b=1.8', 'b=2.0']},
@@ -13,7 +14,7 @@ STRATEGIES = ['pop', 'neb']
 COOP_THRESHOLD = 90.0
 
 
-def find_optimal_thetas_per_a(data_matrices, thetas, a_values):
+def find_optimal_thetas_per_a(data_matrices: MetricMatrices, thetas, a_values):
     """
     For each a value and each strategy_param column, find:
       - SW: theta that maximizes welfare_a
@@ -31,8 +32,7 @@ def find_optimal_thetas_per_a(data_matrices, thetas, a_values):
     coop_freq = data_matrices['coop_freq']  # shape [n_thetas, n_params]
 
     for a in a_values:
-        cost_a = data_matrices['cost'] / a
-        welfare_a = data_matrices['welfare'] - cost_a
+        welfare_a = data_matrices['welfare'] + (a - 1) * data_matrices['cost']
 
         sw_result[a] = thetas_arr[np.argmax(welfare_a, axis=0)].tolist()
 
@@ -62,29 +62,12 @@ def find_optimal_thetas_per_a(data_matrices, thetas, a_values):
     return {'sw': sw_result, 'cost': cost_result}
 
 
-def build_all_optimal_data(agg_dir, a_values):
-    """Build θ* for SW and cost for all configurations.
-
-    Returns: {
-        'sw': {a: {game: {strategy: {game_param: {sp: theta}}}}},
-        'cost': {a: {game: {strategy: {game_param: {sp: {theta, feasible, max_coop}}}}}}
-    }
-    """
-    optimal = {
-        'sw': {a: {} for a in a_values},
-        'cost': {a: {} for a in a_values},
-    }
+def build_all_optimal_data(agg_dir, a_values) -> List[OptimalRecord]:
+    """Build θ* for SW and cost for all (a, game, strategy, game_param, sp) cells."""
+    records: List[OptimalRecord] = []
 
     for game, game_cfg in GAMES.items():
-        for metric in ('sw', 'cost'):
-            for a in a_values:
-                optimal[metric][a][game] = {}
-
         for strategy in STRATEGIES:
-            for metric in ('sw', 'cost'):
-                for a in a_values:
-                    optimal[metric][a][game][strategy] = {}
-
             for game_param in game_cfg['params']:
                 all_params = detect_strategy_params(agg_dir, game, strategy, game_param)
                 if not all_params:
@@ -98,19 +81,24 @@ def build_all_optimal_data(agg_dir, a_values):
                 if not all_params:
                     continue
 
-                data_matrices, thetas = build_diff_matrices(
+                data_matrices, thetas = build_metric_matrices(
                     agg_dir, game, strategy, game_param, all_params
                 )
                 results = find_optimal_thetas_per_a(data_matrices, thetas, a_values)
 
                 for a in a_values:
-                    optimal['sw'][a][game][strategy][game_param] = {}
-                    optimal['cost'][a][game][strategy][game_param] = {}
                     for sp_idx, sp in enumerate(all_params):
-                        optimal['sw'][a][game][strategy][game_param][sp] = results['sw'][a][sp_idx]
-                        optimal['cost'][a][game][strategy][game_param][sp] = results['cost'][a][sp_idx]
+                        cost_info = results['cost'][a][sp_idx]
+                        records.append(OptimalRecord(
+                            a=a, game=game, strategy=strategy,
+                            game_param=game_param, sp=sp,
+                            theta_sw=results['sw'][a][sp_idx],
+                            theta_cost=cost_info['theta'],
+                            feasible=cost_info['feasible'],
+                            max_coop=cost_info['max_coop'],
+                        ))
 
-    return optimal
+    return records
 
 
 def main():
@@ -125,13 +113,11 @@ def main():
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
 
     print("Building optimal θ data for all configurations...")
-    optimal = build_all_optimal_data(args.agg_dir, args.a_values)
+    records = build_all_optimal_data(args.agg_dir, args.a_values)
 
     print("\nGenerating plot...")
-    plotter = SimulationPlotter()
-    plotter.plot_optimal_theta_summary(
-        optimal_sw=optimal['sw'],
-        optimal_cost=optimal['cost'],
+    plot_optimal_theta_summary(
+        records=records,
         a_values=args.a_values,
         title='θ* for Optimal Social Welfare and Cost',
         output_filename=args.output,

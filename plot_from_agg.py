@@ -1,6 +1,10 @@
 """CLI for plotting from preprocessed aggregated data."""
 from preprocess_seeds import load_agg, load_agg_final, load_agg_total
-from plotting_utils_v2 import SimulationPlotter
+from plotting_utils_v2 import (
+    plot_timeseries_from_agg,
+    plot_heatmap_grid_from_agg,
+    plot_diff_plot_from_agg,
+)
 import numpy as np
 import argparse
 import os
@@ -36,8 +40,7 @@ def plot_timeseries(agg_dir, game_type, strategy, game_param, strategy_params, t
     agg_data = load_agg_for_plotting(agg_dir, game_type, strategy, game_param, strategy_params)
     title = f'{game_type.upper()} {strategy.upper()} {game_param}, θ={theta}'
 
-    plotter = SimulationPlotter()
-    plotter.plot_timeseries_from_agg(agg_data, strategy_params, theta, title, show_std, output_file)
+    plot_timeseries_from_agg(agg_data, strategy_params, theta, title, show_std, output_file)
 
 
 def build_heatmap_matrix(agg_dir, game_type, strategy, game_param, strategy_params, metric, population_size=10000):
@@ -60,16 +63,16 @@ def build_heatmap_matrix(agg_dir, game_type, strategy, game_param, strategy_para
     return data_matrix, thetas
 
 
-def build_total_cost_matrix(agg_dir, game_type, strategy, game_param, strategy_params):
-    """Build total cost matrix (sum across all generations)."""
+def build_total_matrix(agg_dir, game_type, strategy, game_param, strategy_params, metric):
+    """Build matrix of summed-over-generations metric, shape [theta, param]."""
     first_sp = strategy_params[0]
-    first_data = load_agg_total(agg_dir, game_type, strategy, game_param, first_sp, 'cost')
+    first_data = load_agg_total(agg_dir, game_type, strategy, game_param, first_sp, metric)
     thetas = sorted(first_data.keys())
 
     data_matrix = np.zeros((len(thetas), len(strategy_params)))
 
     for sp_idx, sp in enumerate(strategy_params):
-        total_data = load_agg_total(agg_dir, game_type, strategy, game_param, sp, 'cost')
+        total_data = load_agg_total(agg_dir, game_type, strategy, game_param, sp, metric)
         for theta_idx, theta in enumerate(thetas):
             if theta in total_data:
                 data_matrix[theta_idx, sp_idx] = total_data[theta]['mean']
@@ -77,60 +80,37 @@ def build_total_cost_matrix(agg_dir, game_type, strategy, game_param, strategy_p
     return data_matrix, thetas
 
 
-def build_efficiency_matrices(agg_dir, game_type, strategy, game_param, strategy_params):
-    """Build cost and base welfare matrices for efficiency comparison."""
-    # Get total cost (sum across all generations)
-    cost_matrix, thetas = build_total_cost_matrix(
-        agg_dir, game_type, strategy, game_param, strategy_params
-    )
-    # Get social welfare (final value)
-    welfare_matrix, _ = build_heatmap_matrix(
-        agg_dir, game_type, strategy, game_param, strategy_params, 'social_welfare', population_size=1
-    )
+def build_metric_matrices(agg_dir, game_type, strategy, game_param, strategy_params):
+    """Build {cost, welfare, coop_freq} matrices, shape [theta, param].
 
-    # welfare_base = payoff = social_welfare + cost (at a=1)
-    # For efficiency comparison: welfare_a = welfare_base - (cost / a)
-    welfare_base = welfare_matrix + cost_matrix
-
-    return {'cost': cost_matrix, 'welfare_base': welfare_base}, thetas
-
-def build_diff_matrices(agg_dir, game_type, strategy, game_param, strategy_params):
-    """Build cost, welfare_base and cooperator frequency matrices for diff line plot comparison."""
-    # Get total cost (sum across all generations)
-    cost_matrix, thetas = build_total_cost_matrix(
-        agg_dir, game_type, strategy, game_param, strategy_params
+    cost and welfare are cumulative (sum across generations) so the heatmap
+    formula welfare + (a-1)*cost computes a well-defined cumulative SW.
+    coop_freq is the final-generation value (steady-state cooperation level).
+    """
+    cost_matrix, thetas = build_total_matrix(
+        agg_dir, game_type, strategy, game_param, strategy_params, 'cost'
     )
-    # Get social welfare (final value)
-    welfare_matrix, _ = build_heatmap_matrix(
-        agg_dir, game_type, strategy, game_param, strategy_params, 'social_welfare', population_size=1
+    welfare_matrix, _ = build_total_matrix(
+        agg_dir, game_type, strategy, game_param, strategy_params, 'social_welfare'
     )
-    # Get cooperator frequency (final value)
-    freq_matrix, _ = build_heatmap_matrix(
+    coop_matrix, _ = build_heatmap_matrix(
         agg_dir, game_type, strategy, game_param, strategy_params, 'cooperator_frequency'
     )
-
-    # welfare_base = payoff = social_welfare + cost (at a=1)
-    # For efficiency comparison: welfare_a = welfare_base - (cost / a)
-    welfare_base = welfare_matrix + cost_matrix
-
-    return {'cost': cost_matrix, 'welfare': welfare_base, 'coop_freq': freq_matrix}, thetas
+    return {'cost': cost_matrix, 'welfare': welfare_matrix, 'coop_freq': coop_matrix}, thetas
 
 
 def plot_efficiency_heatmap(agg_dir, game_type, strategy, game_param, strategy_params, a_values, output_file=None):
     """Load data and plot efficiency heatmap grid for different 'a' values."""
-    data_matrices, thetas = build_efficiency_matrices(agg_dir, game_type, strategy, game_param, strategy_params)
+    data_matrices, thetas = build_metric_matrices(agg_dir, game_type, strategy, game_param, strategy_params)
     title = f"Efficiency Comparison - {game_type.upper()} {strategy.upper()} {game_param}"
+    plot_heatmap_grid_from_agg(data_matrices, strategy_params, thetas, a_values, strategy, title, output_file)
 
-    plotter = SimulationPlotter()
-    plotter.plot_heatmap_grid_from_agg(data_matrices, strategy_params, thetas, a_values, title, output_file)
 
 def plot_diff_line_chart(agg_dir, game_type, strategy, game_param, strategy_params, a_values, output_file=None):
     """Load data and plot diff line chart grid for different 'a' values."""
-    data_matrices, thetas = build_diff_matrices(agg_dir, game_type, strategy, game_param, strategy_params)
+    data_matrices, thetas = build_metric_matrices(agg_dir, game_type, strategy, game_param, strategy_params)
     title = f"Diff Comparison - {game_type.upper()} {strategy.upper()} {game_param}"
-
-    plotter = SimulationPlotter()
-    plotter.plot_diff_plot_from_agg(data_matrices, strategy_params, thetas, a_values, title, output_file)
+    plot_diff_plot_from_agg(data_matrices, strategy_params, thetas, a_values, strategy, title, output_file)
 
 
 if __name__ == "__main__":
@@ -145,6 +125,7 @@ if __name__ == "__main__":
     parser.add_argument('--a-values', type=float, nargs='+', default=[0.5, 1, 1.5], help='Efficiency values (for efficiency plot)')
     parser.add_argument('--output', help='Output file')
     parser.add_argument('--fig-prefix', default='', help='Optional subdirectory under fig/ (e.g. "cpp" -> fig/cpp/)')
+    parser.add_argument('--full-range', action='store_true', help='For POP heatmap/efficiency: use all p_C values instead of the default >=0.9 filter (for appendix figures)')
     args = parser.parse_args()
 
     # Auto-detect strategy params from files
@@ -159,8 +140,11 @@ if __name__ == "__main__":
             # Timeseries: only 0.25, 0.5, 0.75, 1.0
             allowed = {0.25, 0.5, 0.75, 1.0}
             strategy_params = [p for p in all_params if float(p.split('=')[1]) in allowed]
+        elif args.full_range:
+            # Appendix view: use all p_C values
+            strategy_params = all_params
         else:
-            # Heatmap: only >= 0.9
+            # Main-text heatmap: only >= 0.9
             strategy_params = [p for p in all_params if float(p.split('=')[1]) >= 0.9]
 
         # Deduplicate by float value (e.g., pc=1 and pc=1.0 are same)

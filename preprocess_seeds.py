@@ -1,11 +1,64 @@
 """Preprocess seed data into aggregated mean/std files for faster plotting."""
-from plotting_utils_v2 import DataLoader
 import argparse
 import numpy as np
 import os
 import csv
 import re
 import ast
+from typing import Any, Dict, List
+
+
+class DataLoader:
+    """Handles loading and parsing per-seed simulation CSVs."""
+
+    METRIC_COLUMNS = {
+        'cooperator_frequency': 'Cooperator_Frequency',
+        'cost': 'Cost',
+        'social_welfare': 'Social_Welfare',
+        'population_payoff': 'Payoff',
+    }
+
+    @staticmethod
+    def parse_array(array_str: str) -> List[float]:
+        """Parse array string - handles np.int64(val), [1,2,3], and space-separated formats."""
+        pattern = r'np\.(int64|float64)\(([^)]+)\)'
+        matches = re.findall(pattern, array_str)
+        if matches:
+            return [float(val) for _, val in matches]
+
+        array_str = array_str.strip().strip('[]')
+
+        if ',' in array_str:
+            return [float(x.strip()) for x in array_str.split(',') if x.strip()]
+
+        return [float(x) for x in array_str.split() if x.strip()]
+
+    @staticmethod
+    def load_csv(filepath: str) -> List[Dict[str, Any]]:
+        with open(filepath, 'r') as f:
+            return list(csv.DictReader(f))
+
+    @classmethod
+    def load_metric_data(cls, data_dir: str, metric: str, param_value: str, seed: int,
+                         param_name: str = 'pc', theta_range: str = None) -> List[Dict[str, Any]]:
+        """Load metric data with flexible param_name (pc or nc). Auto-detects _det suffix."""
+        if theta_range:
+            filepath = f"{data_dir}/seed_{seed}_theta_{theta_range}_{param_name}={param_value}_{metric}.csv"
+            if not os.path.exists(filepath):
+                filepath = f"{data_dir}/seed_{seed}_theta_{theta_range}_{param_name}={param_value}_det_{metric}.csv"
+        else:
+            filepath = f"{data_dir}/seed_{seed}_{param_name}={param_value}_{metric}.csv"
+            if not os.path.exists(filepath):
+                filepath = f"{data_dir}/seed_{seed}_{param_name}={param_value}_det_{metric}.csv"
+        return cls.load_csv(filepath)
+
+    @classmethod
+    def parse_metric_from_row(cls, row: Dict[str, Any], metric: str) -> List[float]:
+        """Parse metric array from row."""
+        column = cls.METRIC_COLUMNS.get(metric)
+        if not column:
+            raise ValueError(f"Unknown metric: {metric}")
+        return cls.parse_array(row[column])
 
 
 def load_agg(agg_dir, game_type, strategy, game_param, strategy_param, metric):
@@ -143,8 +196,13 @@ def preprocess_data(data_dir, output_dir):
 
     os.makedirs(output_dir, exist_ok=True)
 
+    game_type = metadata['game_type']
+    strategy = metadata['strategy']
+    game_param = metadata['game_param']
+
     for param_value in param_values:
         print(f"\nProcessing {param_name}={param_value}...")
+        strategy_param = f"{param_name}={param_value}"
 
         for metric in metrics:
             all_timeseries = {}
@@ -173,11 +231,10 @@ def preprocess_data(data_dir, output_dir):
                 print(f"  No data for {metric}")
                 continue
 
-            # Build filename: <game_type>_<strategy>_<game_param>_<strategy_param>_<metric>.csv
-            game_type = metadata['game_type']
-            strategy = metadata['strategy']
-            game_param = metadata['game_param']
-            strategy_param = f"{param_name}={param_value}"
+            # Cost: runs that converged early pay no further cost, so pad with 0
+            # to avoid biasing load_agg_total upward. Other metrics flatline at
+            # their converged value.
+            pad_value = 0 if metric == 'cost' else None
             ts_file = f"{output_dir}/{game_type}_{strategy}_{game_param}_{strategy_param}_{metric}.csv"
             with open(ts_file, 'w', newline='') as f:
                 writer = csv.writer(f)
@@ -187,7 +244,10 @@ def preprocess_data(data_dir, output_dir):
                     if not series_list:
                         continue
                     max_len = max(len(s) for s in series_list)
-                    padded = [list(s) + [s[-1]] * (max_len - len(s)) for s in series_list]
+                    padded = [
+                        list(s) + [pad_value if pad_value is not None else s[-1]] * (max_len - len(s))
+                        for s in series_list
+                    ]
                     arr = np.array(padded)
                     writer.writerow([theta, np.mean(arr, axis=0).tolist(), np.std(arr, axis=0).tolist()])
 

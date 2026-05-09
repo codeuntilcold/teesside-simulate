@@ -1,192 +1,323 @@
-from turtle import color
 import matplotlib.pyplot as plt
 import numpy as np
-import csv
-import re
 import os
-from typing import List, Dict, Tuple, Optional, Any, Callable
+from typing import List, Dict, Tuple, Optional, Any, TypedDict
 from dataclasses import dataclass
 
 
+class MetricMatrices(TypedDict):
+    """Per-strategy-param metric matrices, shape [theta, sp]. Cost and welfare are
+    cumulative (summed over generations); coop_freq is final-gen %."""
+    cost: np.ndarray
+    welfare: np.ndarray
+    coop_freq: np.ndarray
+
+
 @dataclass
-class PlotConfig:
-    COLORS = {
-        'cooperator': '#6B7FD7',
-        'defector': '#FF7875',
-        'cost': '#B88BBD',
-        'welfare': '#F18F01'
+class CostWelfareTradeoff:
+    """Diff-plot landmarks and normalised series for one strategy-param column."""
+    sw_a: np.ndarray
+    cost_norm: np.ndarray
+    sw_norm: np.ndarray
+    cost_min_theta: float
+    sw_max_theta: float
+    coef: int  # -1, 0, or 1: order of cost_min_theta vs sw_max_theta
+    span: float  # signed Δθ between the two landmarks
+
+
+@dataclass
+class OptimalRecord:
+    """One (a, game, strategy, game_param, sp) cell for the optimal-θ summary."""
+    a: float
+    game: str          # 'pd' or 'pgg'
+    strategy: str      # 'pop' or 'neb'
+    game_param: str    # e.g. 'b=1.2', 'r=3.0'
+    sp: str            # e.g. 'pc=0.92', 'nc=4'
+    theta_sw: float
+    theta_cost: float
+    feasible: bool
+    max_coop: float
+
+
+COLORS = {
+    'cooperator': '#6B7FD7',
+    'defector': '#FF7875',
+    'cost': '#B88BBD',
+    'welfare': '#F18F01',
+}
+MAX_GENERATIONS = 50
+POPULATION_SIZE = 10000
+DPI = 300
+LABEL_FONTSIZE = 14
+TICK_FONTSIZE = 11
+TITLE_FONTSIZE = 13
+COLOR_MAP = "inferno"
+COLOR_INTERP = "bilinear"
+
+
+def _apply_rcparams():
+    """Set matplotlib title/label defaults so per-call fontsize/fontweight kwargs aren't needed.
+
+    Note: xtick/ytick labelsize stays at matplotlib default to avoid disturbing colorbar
+    and other axes that didn't originally override it. The time-series helper restores 11pt
+    explicitly via tick_params; heatmap data axes do likewise via set_xticklabels(fontsize=).
+    """
+    import matplotlib as mpl
+    mpl.rcParams.update({
+        'axes.titlesize': TITLE_FONTSIZE,
+        'axes.titleweight': 'bold',
+        'axes.labelsize': LABEL_FONTSIZE,
+    })
+
+
+_apply_rcparams()
+
+
+# ---------------------------------------------------------------------------
+# Pure data transforms (no matplotlib calls, no I/O)
+# ---------------------------------------------------------------------------
+
+
+def pad_series(arr, target_len: int, pad_value: Optional[float] = None) -> np.ndarray:
+    """Pad with last value (or pad_value), or truncate, to target_len."""
+    arr = np.asarray(arr, dtype=float)
+    if len(arr) >= target_len:
+        return arr[:target_len]
+    fill = pad_value if pad_value is not None else arr[-1]
+    return np.concatenate([arr, np.full(target_len - len(arr), fill)])
+
+
+def prepare_timeseries_arrays(
+    sp_data: Dict[str, Dict[float, Dict[str, List[float]]]],
+    theta: float,
+    max_gen: int,
+    pop_size: int,
+) -> Optional[Dict[str, Dict[str, np.ndarray]]]:
+    """Pad/truncate timeseries to max_gen, convert coop to %, clip cost std band ≥ 0.
+
+    Returns None if cooperator_frequency for the given theta is missing.
+    """
+    coop = sp_data.get('cooperator_frequency', {}).get(theta)
+    cost = sp_data.get('cost', {}).get(theta)
+    welfare = sp_data.get('social_welfare', {}).get(theta)
+    if not coop:
+        return None
+
+    coop_mean = pad_series(coop['mean'], max_gen)
+    coop_std = pad_series(coop['std'], max_gen)
+    cost_mean = pad_series(cost['mean'], max_gen, pad_value=0)
+    cost_std = pad_series(cost['std'], max_gen, pad_value=0)
+    welfare_mean = pad_series(welfare['mean'], max_gen)
+    welfare_std = pad_series(welfare['std'], max_gen)
+
+    return {
+        'coop': {
+            'mean': (coop_mean / pop_size) * 100,
+            'std': (coop_std / pop_size) * 100,
+        },
+        'cost': {
+            'mean': cost_mean,
+            'lower': np.maximum(cost_mean - cost_std, 0),
+            'upper': cost_mean + cost_std,
+        },
+        'welfare': {
+            'mean': welfare_mean,
+            'lower': welfare_mean - welfare_std,
+            'upper': welfare_mean + welfare_std,
+        },
     }
 
-    max_generations: int = 50
-    population_size: int = 10000
 
-    dpi: int = 300
-
-    label_fontsize: int = 12
-    tick_fontsize: int = 8
-    title_fontsize: int = 11
-
-    color_map = "inferno"
-    color_interp = "bilinear"
+def adjusted_welfare_for_efficiency(welfare: np.ndarray, cost: np.ndarray, a: float) -> np.ndarray:
+    """Heatmap formula: welfare + (a - 1) * cost."""
+    return welfare + (a - 1) * cost
 
 
-class DataLoader:
-    """Handles loading and parsing simulation data from CSV files."""
+def analyze_cost_welfare_tradeoff(
+    cost: np.ndarray,
+    welfare: np.ndarray,
+    coop_freq: np.ndarray,
+    theta_values: List[float],
+    a: float,
+    coop_threshold: float = 90.0,
+) -> CostWelfareTradeoff:
+    """Diff-plot transform for one strategy column. Inputs are 1D over theta.
 
-    METRIC_COLUMNS = {
-        'cooperator_frequency': 'Cooperator_Frequency',
-        'cost': 'Cost',
-        'social_welfare': 'Social_Welfare',
-        'population_payoff': 'Payoff'
-    }
+    Per the paper: institutional cost is θ·|C_inv|, independent of a. Recorded
+    welfare at sim-time a=1 is F_base; SW at hypothetical a' is welfare+(a-1)*cost.
+    """
+    sw_a = welfare + (a - 1) * cost
 
-    METRIC_COLUMNS_NEB = {
-        'cooperator_frequency': 'Final_Cooperator_Frequency',
-        'cost': 'Final_Cost',
-        'social_welfare': 'Final_Social_Welfare',
-        'population_payoff': 'Final_Fitnesses'
-    }
+    high_coop_idx = np.where(coop_freq > coop_threshold)[0]
+    cost_min_idx = high_coop_idx[np.argmin(cost[high_coop_idx])]
+    sw_max_idx = int(np.argmax(sw_a))
 
-    @staticmethod
-    def parse_array(array_str: str) -> List[float]:
-        """Parse array string - handles np.int64(val), [1,2,3], and space-separated formats."""
-        # Try numpy format: np.int64(value)
-        pattern = r'np\.(int64|float64)\(([^)]+)\)'
-        matches = re.findall(pattern, array_str)
-        if matches:
-            return [float(val) for _, val in matches]
+    cost_min_theta = theta_values[cost_min_idx]
+    sw_max_theta = theta_values[sw_max_idx]
 
-        # Strip brackets
-        array_str = array_str.strip().strip('[]')
+    if cost_min_theta == sw_max_theta:
+        coef = 0
+    elif cost_min_theta > sw_max_theta:
+        coef = -1
+    else:
+        coef = 1
 
-        # Try comma-separated
-        if ',' in array_str:
-            return [float(x.strip()) for x in array_str.split(',') if x.strip()]
-
-        # Fall back to space-separated
-        return [float(x) for x in array_str.split() if x.strip()]
-
-    @staticmethod
-    def load_csv(filepath: str) -> List[Dict[str, Any]]:
-        with open(filepath, 'r') as f:
-            return list(csv.DictReader(f))
-
-    @classmethod
-    def load_pop_data(cls, data_dir: str, metric: str, pc_value: str, seed: int,
-                      theta_range: str = None) -> List[Dict[str, Any]]:
-        """Load POP strategy data."""
-        if theta_range:
-            filepath = f"{data_dir}/seed_{seed}_theta_{theta_range}_pc={pc_value}_{metric}.csv"
-        else:
-            filepath = f"{data_dir}/seed_{seed}_pc={pc_value}_{metric}.csv"
-        return cls.load_csv(filepath)
-
-    @classmethod
-    def load_neb_data(cls, data_dir: str, nc_value: int) -> List[Dict[str, Any]]:
-        """Load NEB strategy data from consolidated file."""
-        return cls.load_csv(f"{data_dir}/nc_{nc_value}_final_all.csv")
-
-    @classmethod
-    def get_metric_array(cls, row: Dict[str, Any], metric: str, is_neb: bool = False) -> List[float]:
-        """Extract and parse metric array from a data row."""
-        columns = cls.METRIC_COLUMNS_NEB if is_neb else cls.METRIC_COLUMNS
-        column = columns.get(metric)
-        if not column:
-            raise ValueError(f"Unknown metric: {metric}")
-        return cls.parse_array(row[column])
-
-    @classmethod
-    def get_theta_values(cls, data_dir: str, pc_value: str, seed: int,
-                         theta_range: str = None) -> List[float]:
-        """Get sorted unique theta values from data."""
-        data = cls.load_pop_data(data_dir, 'cooperator_frequency', pc_value, seed, theta_range)
-        return sorted(set(float(row['Theta']) for row in data))
-
-    @classmethod
-    def load_metric_data(cls, data_dir: str, metric: str, param_value: str, seed: int,
-                         param_name: str = 'pc', theta_range: str = None) -> List[Dict[str, Any]]:
-        """Load metric data with flexible param_name (pc or nc). Auto-detects _det suffix."""
-        if theta_range:
-            filepath = f"{data_dir}/seed_{seed}_theta_{theta_range}_{param_name}={param_value}_{metric}.csv"
-            if not os.path.exists(filepath):
-                filepath = f"{data_dir}/seed_{seed}_theta_{theta_range}_{param_name}={param_value}_det_{metric}.csv"
-        else:
-            filepath = f"{data_dir}/seed_{seed}_{param_name}={param_value}_{metric}.csv"
-            if not os.path.exists(filepath):
-                filepath = f"{data_dir}/seed_{seed}_{param_name}={param_value}_det_{metric}.csv"
-        return cls.load_csv(filepath)
-
-    @classmethod
-    def parse_metric_from_row(cls, row: Dict[str, Any], metric: str) -> List[float]:
-        """Parse metric array from row (for POP data)."""
-        column = cls.METRIC_COLUMNS.get(metric)
-        if not column:
-            raise ValueError(f"Unknown metric: {metric}")
-        return cls.parse_array(row[column])
-
-
-def pad_to_length(data: List[float], target_len: int) -> List[float]:
-    """Pad list with last value or truncate to target length."""
-    if len(data) >= target_len:
-        return data[:target_len]
-    return data + [data[-1]] * (target_len - len(data))
-
-
-def find_convergence_idx(welfare: List[float]) -> Optional[int]:
-    """Find index where welfare drops to 0 after being non-zero."""
-    for i in range(1, len(welfare)):
-        if welfare[i] == 0 and welfare[i - 1] > 0:
-            return i
-    return None
-
-
-def prepare_timeseries(coop: List[float], cost: List[float], welfare: List[float],
-                       max_gen: int) -> Tuple[List[float], List[float], List[float]]:
-    """Prepare time series data: handle convergence and pad to max_gen."""
-    conv_idx = find_convergence_idx(welfare)
-
-    if conv_idx is not None:
-        last_welfare = welfare[conv_idx - 1]
-        welfare = welfare[:conv_idx] + [last_welfare] * (max_gen - conv_idx)
-
-    return (
-        pad_to_length(coop, max_gen),
-        pad_to_length(cost, max_gen),
-        pad_to_length(welfare, max_gen)
+    return CostWelfareTradeoff(
+        sw_a=sw_a,
+        cost_norm=(cost - cost.min()) / (cost.max() - cost.min()),
+        sw_norm=(sw_a - sw_a.min()) / (sw_a.max() - sw_a.min()),
+        cost_min_theta=cost_min_theta,
+        sw_max_theta=sw_max_theta,
+        coef=coef,
+        span=coef * (sw_max_theta - cost_min_theta),
     )
 
 
-def setup_timeseries_ax(ax, generations, y_data, color: str, ylabel: str = None,
-                        xlabel: str = None, ylim: Tuple = None, fill_to_100: bool = False,
-                        fill_color_top: str = None, legend_labels: Tuple[str, str] = None,
-                        config: PlotConfig = None):
-    """Configure a time series axis with fill_between styling."""
-    config = config or PlotConfig()
-    max_gen = config.max_generations
+_GAME_LABELS = {'pd': 'PD', 'pgg': 'PGG'}
+_GAME_PARAM_DISPLAY = {
+    'pd': ['b=1.2', 'b=1.8', 'b=2.0'],
+    'pgg': ['r=1.5', 'r=3.0', 'r=4.5'],
+}
+_OPTIMAL_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c']
+_OPTIMAL_MARKERS = ['o', 's', '^']
+_OPTIMAL_SW_OFFSETS = [(-18, 8), (5, 8), (12, -10)]
+_OPTIMAL_COST_OFFSETS = [(-18, -12), (5, -12), (12, 4)]
 
-    if fill_to_100 and fill_color_top:
-        ax.fill_between(generations, 0, y_data, color=color, alpha=1.0,
-                        linewidth=0.5, edgecolor=color, label=legend_labels[0] if legend_labels else None)
-        ax.fill_between(generations, y_data, 100, color=fill_color_top, alpha=1.0,
-                        linewidth=0.5, edgecolor=fill_color_top, label=legend_labels[1] if legend_labels else None)
-    else:
-        ax.fill_between(generations, y_data, color=color, alpha=1.0 if 'welfare' not in str(ylabel).lower() else 0.8,
-                        linewidth=0.5, edgecolor=color)
 
+# ---------------------------------------------------------------------------
+# Pure viz helpers
+# ---------------------------------------------------------------------------
+
+
+def style_timeseries_ax(ax, max_gen: int, tick_fontsize: int = 11):
+    """Common styling for the time-series x-axis and grid."""
     ax.set_xlim(0, max_gen)
     ax.set_xticks([0, 10, 20, 30, 40, max_gen])
-    ax.tick_params(labelsize=config.tick_fontsize)
+    ax.tick_params(labelsize=tick_fontsize)
     ax.grid(True, alpha=0.35, linewidth=0.5, color='gray')
 
-    if ylim:
-        ax.set_ylim(ylim)
-        if ylim[1] == 100:
-            ax.set_yticks([0, 20, 40, 60, 80, 100])
 
-    if ylabel:
-        ax.set_ylabel(ylabel, fontsize=10)
-    if xlabel:
-        ax.set_xlabel(xlabel, fontsize=10)
+def fill_band(ax, x, y, color: str, alpha: float = 1.0):
+    """Fill the area between 0 and y with a single colour."""
+    ax.fill_between(x, y, color=color, alpha=alpha, linewidth=0.5, edgecolor=color)
+
+
+def fill_stacked_to_100(ax, x, y, lower_color: str, upper_color: str,
+                        labels: Optional[Tuple[str, str]] = None):
+    """Fill 0→y in lower_color and y→100 in upper_color (stacked-frequency band)."""
+    lo_label, hi_label = labels or (None, None)
+    ax.fill_between(x, 0, y, color=lower_color, alpha=1.0, linewidth=0.5,
+                    edgecolor=lower_color, label=lo_label)
+    ax.fill_between(x, y, 100, color=upper_color, alpha=1.0, linewidth=0.5,
+                    edgecolor=upper_color, label=hi_label)
+
+
+def _draw_diff_panel(ax, tradeoff: CostWelfareTradeoff, coop: np.ndarray,
+                     sorted_thetas: List[float], sp_label: str, a: float,
+                     *, set_ylim_top: bool):
+    """Draw one (sp, a) cell of the diff plot."""
+    cost_min_theta = tradeoff.cost_min_theta
+    sw_max_theta = tradeoff.sw_max_theta
+
+    ax.plot(sorted_thetas, tradeoff.cost_norm, color='lightcoral', label='Total Cost')
+    ax.plot(sorted_thetas, tradeoff.sw_norm, color='deepskyblue', label='Social Welfare')
+    ax.plot(sorted_thetas, coop / 100, linestyle='-.', color='darkcyan', label='Coop Freq')
+
+    span = tradeoff.span
+    ax.axhline(0.9, xmin=0.2 / (span + 0.4), xmax=(span + 0.2) / (span + 0.4),
+               color='limegreen', linestyle='--')
+    ax.axvline(cost_min_theta, linestyle=(0, (3, 3)), color='lightcoral')
+    ax.axvline(sw_max_theta, linestyle=(2, (3, 3)), color='deepskyblue')
+    ax.text(cost_min_theta + 0.01, 0.5, round(cost_min_theta, 1), rotation=90, va='center')
+    ax.text(sw_max_theta + 0.01, 0.5, round(sw_max_theta, 1), rotation=90, va='center')
+    ax.text((cost_min_theta + sw_max_theta) / 2, 0.92, 'Δθ', va='center')
+    ax.plot([cost_min_theta], [0.9], color='limegreen', marker='o')
+    ax.plot([sw_max_theta], [0.9], color='limegreen', marker='o')
+
+    if tradeoff.coef == 1:
+        ax.set_xlim(cost_min_theta - 0.2, sw_max_theta + 0.2)
+    elif tradeoff.coef == -1:
+        ax.set_xlim(sw_max_theta - 0.2, cost_min_theta + 0.2)
+    if set_ylim_top:
+        ax.set_ylim(0, 1.1)
+
+    ax.set_xlabel('Per-individual investment cost, θ')
+    ax.set_ylabel('Normalized Value')
+    ax.set_title(f'{sp_label}, a={a}')
+
+
+def _draw_optimal_panel(ax, cell_records: List[OptimalRecord],
+                        *, strategy: str, a: float,
+                        is_first_row: bool, is_first_col: bool):
+    """Draw one (a, strategy) cell of the optimal-θ summary."""
+    if not cell_records:
+        ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
+        return
+
+    by_game_param: Dict[str, List[OptimalRecord]] = {}
+    for r in cell_records:
+        by_game_param.setdefault(r.game_param, []).append(r)
+
+    x_vals: List[float] = []
+    for idx, game_param in enumerate(sorted(by_game_param.keys())):
+        sp_records = sorted(by_game_param[game_param], key=lambda r: float(r.sp.split('=')[1]))
+        x_vals = [float(r.sp.split('=')[1]) for r in sp_records]
+        color = _OPTIMAL_COLORS[idx % len(_OPTIMAL_COLORS)]
+        marker = _OPTIMAL_MARKERS[idx % len(_OPTIMAL_MARKERS)]
+        sw_off = _OPTIMAL_SW_OFFSETS[idx % len(_OPTIMAL_SW_OFFSETS)]
+        cost_off = _OPTIMAL_COST_OFFSETS[idx % len(_OPTIMAL_COST_OFFSETS)]
+
+        for x, r in zip(x_vals, sp_records):
+            if not r.feasible:
+                continue
+
+            ax.scatter([x], [r.theta_sw], marker=marker, color=color, s=60, zorder=3)
+            ax.annotate(f'{r.theta_sw:.1f}', (x, r.theta_sw),
+                        textcoords='offset points', xytext=sw_off,
+                        fontsize=5.5, color=color)
+
+            ax.scatter([x], [r.theta_cost], marker=marker, facecolors='none',
+                       edgecolors=color, s=60, linewidths=1.5, zorder=3)
+            ax.annotate(f'{r.theta_cost:.1f}', (x, r.theta_cost),
+                        textcoords='offset points', xytext=cost_off,
+                        fontsize=5.5, color=color)
+
+    ax.set_xlabel('$p_C$' if strategy == 'pop' else '$n_C$')
+    ax.set_xticks(x_vals)
+    ax.grid(True, alpha=0.3)
+    ax.autoscale(axis='y')
+    y_min, y_max = ax.get_ylim()
+    margin = (y_max - y_min) * 0.15
+    ax.set_ylim(y_min - margin, y_max + margin)
+
+    if is_first_col:
+        ax.set_ylabel(f'a={a}\nθ*')
+    if is_first_row:
+        strategy_labels = {'pop': 'POP', 'neb': 'NEB'}
+        ax.set_title(strategy_labels[strategy], fontweight='normal')
+
+
+def _make_optimal_legend(game_param_labels: List[str]):
+    """Build the per-game-param + filled-vs-hollow legend."""
+    from matplotlib.lines import Line2D
+    handles = []
+    for idx, label in enumerate(game_param_labels):
+        handles.append(Line2D([0], [0], marker=_OPTIMAL_MARKERS[idx], color='w',
+                              markerfacecolor=_OPTIMAL_COLORS[idx], markersize=8, label=label))
+    handles.append(Line2D([0], [0], marker='o', color='w',
+                          markerfacecolor='gray', markersize=8, label='Filled = SW'))
+    handles.append(Line2D([0], [0], marker='o', color='w',
+                          markerfacecolor='none', markeredgecolor='gray',
+                          markeredgewidth=1.5, markersize=8, label='Hollow = Cost'))
+    return handles
+
+
+def finalize_figure(fig, output_filename: Optional[str], dpi: int, show_plot: bool):
+    """Save figure to file (and close) or show interactively."""
+    if output_filename:
+        save_figure(fig, output_filename, dpi, show_plot)
+    else:
+        plt.show()
 
 
 def save_figure(fig, output_path: str, dpi: int = 300, show: bool = False, message: str = None):
@@ -205,597 +336,262 @@ def save_figure(fig, output_path: str, dpi: int = 300, show: bool = False, messa
         plt.close()
 
 
-class SimulationPlotter:
-    def __init__(self, config: Optional[PlotConfig] = None):
-        self.config = config or PlotConfig()
-        self.loader = DataLoader()
+def plot_timeseries_from_agg(
+    agg_data: Dict[str, Dict[str, Dict[float, Dict[str, List[float]]]]],
+    strategy_params: List[str],
+    theta: float,
+    title: str = '',
+    show_std: bool = True,
+    output_filename: Optional[str] = None,
+    show_plot: bool = False
+) -> str:
+    """
+    Plot timeseries grid from pre-aggregated data.
 
-    def _load_multiseed_timeseries(
-        self,
-        load_fn: Callable[[int], Tuple[List[float], List[float], List[float]]],
-        seeds: List[int]
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Load and stack time series data from multiple seeds."""
-        all_coop, all_cost, all_welfare = [], [], []
+    Args:
+        agg_data: {strategy_param: {metric: {theta: {'mean': [...], 'std': [...]}}}}
+        strategy_params: List of strategy param labels (e.g. ['pc=0.25', 'pc=0.5'])
+        theta: Theta value to plot
+        title: Overall figure title
+        show_std: Whether to show standard deviation bands
+    """
+    n_cols = len(strategy_params)
+    max_gen = MAX_GENERATIONS
 
-        for seed in seeds:
-            try:
-                coop, cost, welfare = load_fn(seed)
-                coop, cost, welfare = prepare_timeseries(coop, cost, welfare, self.config.max_generations)
-                all_coop.append(coop)
-                all_cost.append(cost)
-                all_welfare.append(welfare)
-            except (FileNotFoundError, StopIteration):
-                continue
+    fig, axes = plt.subplots(3, n_cols, figsize=(4 * n_cols, 6),
+                             gridspec_kw={'hspace': 0.3, 'wspace': 0.25})
+    if n_cols == 1:
+        axes = axes.reshape(-1, 1)
 
-        return np.array(all_coop), np.array(all_cost), np.array(all_welfare)
+    colors = COLORS
+    generations = np.arange(max_gen)
+    tick_fontsize = TICK_FONTSIZE
 
-    def _plot_timeseries_column(self, axes_col, generations, coop_pct, costs, welfare,
-                                 std_coop=None, std_cost=None, std_welfare=None,
-                                 title: str = None, is_first_col: bool = False,
-                                 is_last_col: bool = False, show_std: bool = True):
-        """Plot a single column (3 rows) of time series data."""
-        colors = self.config.COLORS
+    for col_idx, sp in enumerate(strategy_params):
+        arrays = prepare_timeseries_arrays(
+            agg_data.get(sp, {}), theta, max_gen, POPULATION_SIZE
+        )
+        if arrays is None:
+            print(f"Warning: theta={theta} not found for {sp}")
+            continue
 
-        # Row 0: Frequency
-        ax_freq = axes_col[0]
-        setup_timeseries_ax(ax_freq, generations, coop_pct, colors['cooperator'],
-                            ylabel='frequency' if is_first_col else None,
-                            ylim=(0, 100), fill_to_100=True,
-                            fill_color_top=colors['defector'],
-                            legend_labels=('C', 'D'), config=self.config)
-        if show_std and std_coop is not None:
-            ax_freq.fill_between(generations, coop_pct - std_coop, coop_pct + std_coop,
-                                 color='white', alpha=0.3)
-        if is_last_col:
+        coop, cost, welfare = arrays['coop'], arrays['cost'], arrays['welfare']
+        is_first = col_idx == 0
+
+        ax_freq = axes[0, col_idx]
+        fill_stacked_to_100(ax_freq, generations, coop['mean'],
+                            colors['cooperator'], colors['defector'], labels=('C', 'D'))
+        style_timeseries_ax(ax_freq, max_gen, tick_fontsize)
+        ax_freq.set_ylim(0, 100)
+        ax_freq.set_yticks([0, 20, 40, 60, 80, 100])
+        if is_first:
+            ax_freq.set_ylabel('frequency', fontsize=10)
+        if show_std:
+            ax_freq.fill_between(generations, coop['mean'] - coop['std'],
+                                 coop['mean'] + coop['std'], color='white', alpha=0.3)
+        if col_idx == n_cols - 1:
             ax_freq.legend(loc='upper right', fontsize=8, frameon=True, fancybox=False)
-        if title:
-            ax_freq.set_title(title, fontsize=self.config.title_fontsize, fontweight='bold')
+        ax_freq.set_title(sp)
 
-        # Row 1: Cost
-        ax_cost = axes_col[1]
-        setup_timeseries_ax(ax_cost, generations, costs, colors['cost'],
-                            ylabel='cost' if is_first_col else None, config=self.config)
-        if show_std and std_cost is not None:
-            ax_cost.fill_between(generations, costs - std_cost, costs + std_cost,
+        ax_cost = axes[1, col_idx]
+        fill_band(ax_cost, generations, cost['mean'], colors['cost'])
+        style_timeseries_ax(ax_cost, max_gen, tick_fontsize)
+        if is_first:
+            ax_cost.set_ylabel('cost', fontsize=10)
+        if show_std:
+            ax_cost.fill_between(generations, cost['lower'], cost['upper'],
                                  color=colors['cost'], alpha=0.3)
 
-        # Row 2: Social Welfare
-        ax_welfare = axes_col[2]
-        setup_timeseries_ax(ax_welfare, generations, welfare, colors['welfare'],
-                            ylabel='SW (a=1)' if is_first_col else None,
-                            xlabel='generation', config=self.config)
-        if show_std and std_welfare is not None:
-            ax_welfare.fill_between(generations, welfare - std_welfare, welfare + std_welfare,
+        ax_welfare = axes[2, col_idx]
+        fill_band(ax_welfare, generations, welfare['mean'], colors['welfare'])
+        style_timeseries_ax(ax_welfare, max_gen, tick_fontsize)
+        ax_welfare.set_xlabel('generation', fontsize=10)
+        if is_first:
+            ax_welfare.set_ylabel('SW (a=1)', fontsize=10)
+        if show_std:
+            ax_welfare.fill_between(generations, welfare['lower'], welfare['upper'],
                                     color=colors['welfare'], alpha=0.3)
 
-    def _plot_heatmap(self, ax, data: np.ndarray, x_values: List[str], y_values: List[float],
-                      title: str, xlabel: str, ylabel: str, colorbar_label: str):
-        """Plot a single heatmap."""
-        im = ax.imshow(data, aspect='auto', cmap=self.config.color_map, origin='lower', interpolation=self.config.color_interp)
+    if title:
+        fig.suptitle(title, fontsize=12, y=1.02)
 
-        ax.set_xticks(np.arange(len(x_values)))
-        ax.set_xticklabels([f'{float(x):.2f}' for x in x_values])
-        ax.set_yticks(np.arange(len(y_values)))
-        ax.set_yticklabels([f'{t:.1f}' for t in y_values])
+    finalize_figure(fig, output_filename, DPI, show_plot)
+    return output_filename
 
-        ax.set_xlabel(xlabel, fontsize=self.config.label_fontsize)
-        ax.set_ylabel(ylabel, fontsize=self.config.label_fontsize)
-        ax.set_title(title, fontsize=self.config.title_fontsize, fontweight='bold')
+def plot_heatmap_grid_from_agg(
+    data_matrices: MetricMatrices,
+    strategy_params: List[str],
+    theta_values: List[float],
+    a_values: List[float],
+    strategy: str,
+    title: str = '',
+    output_filename: Optional[str] = None,
+    show_plot: bool = False
+) -> str:
+    """
+    Plot heatmap grid for different 'a' values (cost efficiency).
 
-        cbar = plt.colorbar(im, ax=ax)
-        cbar.set_label(colorbar_label, rotation=270, labelpad=15)
+    Args:
+        data_matrices: {'cost': array, 'welfare': array} with shape [theta, param]
+        strategy: 'pop' or 'neb'
+        a_values: List of efficiency values to plot
+    """
+    n_cols = len(a_values)
+    fig, axes = plt.subplots(2, n_cols, figsize=(5 * n_cols, 8))
 
-    def _load_multiseed_heatmap(
-        self,
-        data_dir: str,
-        param_values: List[str],
-        theta_values: List[float],
-        seeds: List[int],
-        metrics: List[str],
-        aggregation: Dict[str, str],
-        theta_range: str = None
-    ) -> Dict[str, np.ndarray]:
-        """Load heatmap data averaged across seeds."""
-        all_data = {m: np.zeros((len(seeds), len(theta_values), len(param_values))) for m in metrics}
+    xlabel = '$p_C$' if strategy == 'pop' else '$n_C$'
+    x_tick_labels = [sp.split('=')[1] for sp in strategy_params]
+    tick_step = max(1, len(theta_values) // min(11, len(theta_values)))
+    y_tick_pos = list(range(0, len(theta_values), tick_step))
+    y_tick_labels = [f"{theta_values[i]:.1f}" for i in y_tick_pos]
 
-        for seed_idx, seed in enumerate(seeds):
-            for pc_idx, pc in enumerate(param_values):
-                for metric in metrics:
-                    try:
-                        metric_data = self.loader.load_pop_data(data_dir, metric, pc, seed, theta_range)
+    def render(ax, matrix, panel_title, show_ylabel=False):
+        im = ax.imshow(matrix, aspect='auto', cmap=COLOR_MAP,
+                       origin='lower', interpolation=COLOR_INTERP)
+        ax.set_title(panel_title)
+        ax.set_xticks(range(len(strategy_params)))
+        ax.set_xticklabels(x_tick_labels, fontsize=TICK_FONTSIZE)
+        ax.set_yticks(y_tick_pos)
+        ax.set_yticklabels(y_tick_labels, fontsize=TICK_FONTSIZE)
+        ax.set_xlabel(xlabel)
+        if show_ylabel:
+            ax.set_ylabel('θ')
+        plt.colorbar(im, ax=ax)
 
-                        for theta_idx, theta in enumerate(theta_values):
-                            row = next((r for r in metric_data if abs(float(r['Theta']) - theta) < 0.01), None)
-                            if row:
-                                values = self.loader.get_metric_array(row, metric)
-                                if aggregation.get(metric) == 'sum':
-                                    value = sum(values)
-                                else:
-                                    value = values[-1] if values else 0
+    # Top row: cooperation level, total cost, (empty slots for a_values beyond index 1)
+    render(axes[0, 0], data_matrices['coop_freq'], 'Cooperation level (%)', show_ylabel=True)
+    render(axes[0, 1], data_matrices['cost'], 'Total Cost')
+    for col_idx in range(2, n_cols):
+        axes[0, col_idx].axis('off')
 
-                                if metric == 'cooperator_frequency':
-                                    value = (value / self.config.population_size) * 100
-
-                                all_data[metric][seed_idx, theta_idx, pc_idx] = value
-                    except FileNotFoundError:
-                        continue
-
-        return {m: np.mean(all_data[m], axis=0) for m in metrics}
-
-    def plot_timeseries_from_agg(
-        self,
-        agg_data: Dict[str, Dict[str, Dict[float, Dict[str, List[float]]]]],
-        strategy_params: List[str],
-        theta: float,
-        title: str = '',
-        show_std: bool = True,
-        output_filename: Optional[str] = None,
-        show_plot: bool = False
-    ) -> str:
-        """
-        Plot timeseries grid from pre-aggregated data.
-
-        Args:
-            agg_data: {strategy_param: {metric: {theta: {'mean': [...], 'std': [...]}}}}
-            strategy_params: List of strategy param labels (e.g. ['pc=0.25', 'pc=0.5'])
-            theta: Theta value to plot
-            title: Overall figure title
-            show_std: Whether to show standard deviation bands
-        """
-        n_cols = len(strategy_params)
-        pop_size = self.config.population_size
-        colors = self.config.COLORS
-
-        fig, axes = plt.subplots(3, n_cols, figsize=(4 * n_cols, 6),
-                                 gridspec_kw={'hspace': 0.3, 'wspace': 0.25})
-        if n_cols == 1:
-            axes = axes.reshape(-1, 1)
-
-        for col_idx, sp in enumerate(strategy_params):
-            sp_data = agg_data.get(sp, {})
-            coop = sp_data.get('cooperator_frequency', {}).get(theta)
-            cost = sp_data.get('cost', {}).get(theta)
-            welfare = sp_data.get('social_welfare', {}).get(theta)
-
-            if not coop:
-                print(f"Warning: theta={theta} not found for {sp}")
-                continue
-
-            max_gen = self.config.max_generations
-
-            def pad_series(arr, target_len, pad_value=None):
-                """Pad array to target length. If pad_value is None, use last value."""
-                arr = np.array(arr)
-                if len(arr) >= target_len:
-                    return arr[:target_len]
-                fill = pad_value if pad_value is not None else arr[-1]
-                return np.concatenate([arr, np.full(target_len - len(arr), fill)])
-
-            coop_mean = pad_series(coop['mean'], max_gen)
-            coop_std = pad_series(coop['std'], max_gen)
-            cost_mean = pad_series(cost['mean'], max_gen, pad_value=0)
-            cost_std = pad_series(cost['std'], max_gen, pad_value=0)
-            welfare_mean = pad_series(welfare['mean'], max_gen)
-            welfare_std = pad_series(welfare['std'], max_gen)
-
-            generations = np.arange(max_gen)
-            coop_pct = (coop_mean / pop_size) * 100
-            std_coop_pct = (coop_std / pop_size) * 100
-
-            is_first = col_idx == 0
-            is_last = col_idx == n_cols - 1
-
-            # Row 0: Frequency
-            ax_freq = axes[0, col_idx]
-            setup_timeseries_ax(ax_freq, generations, coop_pct, colors['cooperator'],
-                                ylabel='frequency' if is_first else None,
-                                ylim=(0, 100), fill_to_100=True,
-                                fill_color_top=colors['defector'],
-                                legend_labels=('C', 'D'), config=self.config)
-            if show_std:
-                ax_freq.fill_between(generations, coop_pct - std_coop_pct, coop_pct + std_coop_pct,
-                                     color='white', alpha=0.3)
-            if is_last:
-                ax_freq.legend(loc='upper right', fontsize=8, frameon=True, fancybox=False)
-            ax_freq.set_title(sp, fontsize=self.config.title_fontsize, fontweight='bold')
-
-            # Row 1: Cost (clip std band at 0 - cost can't be negative)
-            ax_cost = axes[1, col_idx]
-            setup_timeseries_ax(ax_cost, generations, cost_mean, colors['cost'],
-                                ylabel='cost' if is_first else None, config=self.config)
-            if show_std:
-                cost_lower = np.maximum(cost_mean - cost_std, 0)
-                ax_cost.fill_between(generations, cost_lower, cost_mean + cost_std,
-                                     color=colors['cost'], alpha=0.3)
-
-            # Row 2: Social Welfare
-            ax_welfare = axes[2, col_idx]
-            setup_timeseries_ax(ax_welfare, generations, welfare_mean, colors['welfare'],
-                                ylabel='SW (a=1)' if is_first else None,
-                                xlabel='generation', config=self.config)
-            if show_std:
-                ax_welfare.fill_between(generations, welfare_mean - welfare_std, welfare_mean + welfare_std,
-                                        color=colors['welfare'], alpha=0.3)
-
-        if title:
-            fig.suptitle(title, fontsize=12, y=1.02)
-
-        if output_filename:
-            save_figure(fig, output_filename, self.config.dpi, show_plot)
-        else:
-            plt.show()
-
-        return output_filename
-
-    def plot_heatmap_grid_from_agg(
-        self,
-        data_matrices: Dict[str, np.ndarray],
-        strategy_params: List[str],
-        theta_values: List[float],
-        a_values: List[float],
-        title: str = '',
-        output_filename: Optional[str] = None,
-        show_plot: bool = False
-    ) -> str:
-        """
-        Plot heatmap grid for different 'a' values (cost efficiency).
-
-        Args:
-            data_matrices: {'cost': array, 'welfare': array} with shape [theta, param]
-            a_values: List of efficiency values to plot
-        """
-        n_cols = len(a_values)
-        fig, axes = plt.subplots(2, n_cols, figsize=(5 * n_cols, 8))
-
-        for col_idx, a in enumerate(a_values):
-            cost_a = data_matrices['cost'] / a
-            welfare_a = data_matrices['welfare_base'] - cost_a
-
-            # Row 0: Cost
-            ax_cost = axes[0, col_idx]
-            im_cost = ax_cost.imshow(cost_a, aspect='auto', cmap=self.config.color_map, origin='lower', interpolation=self.config.color_interp)
-            ax_cost.set_title(f'a = {a}', fontsize=self.config.title_fontsize, fontweight='bold')
-            ax_cost.set_xticks(range(len(strategy_params)))
-            ax_cost.set_xticklabels([sp.split('=')[1] for sp in strategy_params], fontsize=8)
-            n_ticks = min(11, len(theta_values))
-            tick_step = max(1, len(theta_values) // n_ticks)
-            ax_cost.set_yticks(range(0, len(theta_values), tick_step))
-            ax_cost.set_yticklabels([f"{theta_values[i]:.1f}" for i in range(0, len(theta_values), tick_step)], fontsize=8)
-            if col_idx == 0:
-                ax_cost.set_ylabel('Total Cost\n\nθ', fontsize=self.config.label_fontsize)
-            plt.colorbar(im_cost, ax=ax_cost)
-
-            # Row 1: Social Welfare
-            ax_welfare = axes[1, col_idx]
-            im_welfare = ax_welfare.imshow(welfare_a, aspect='auto', cmap=self.config.color_map, origin='lower', interpolation=self.config.color_interp)
-            is_neb = strategy_params[0].startswith('nc')
-            ax_welfare.set_xlabel('$n_C$' if is_neb else '$p_C$', fontsize=self.config.label_fontsize)
-            ax_welfare.set_xticks(range(len(strategy_params)))
-            ax_welfare.set_xticklabels([sp.split('=')[1] for sp in strategy_params], fontsize=8)
-            ax_welfare.set_yticks(range(0, len(theta_values), tick_step))
-            ax_welfare.set_yticklabels([f"{theta_values[i]:.1f}" for i in range(0, len(theta_values), tick_step)], fontsize=8)
-            if col_idx == 0:
-                ax_welfare.set_ylabel('Social Welfare\n\nθ', fontsize=self.config.label_fontsize)
-            plt.colorbar(im_welfare, ax=ax_welfare)
-
-        if title:
-            fig.suptitle(title, fontsize=14, y=1.02)
-
-        plt.tight_layout()
-
-        if output_filename:
-            save_figure(fig, output_filename, self.config.dpi, show_plot)
-        else:
-            plt.show()
-
-        return output_filename
-
-    def plot_diff_plot_from_agg(
-        self,
-        data_matrices: Dict[str, np.ndarray],
-        strategy_params: List[str],
-        theta_values: List[float],
-        a_values: List[float],
-        title: str = '',
-        output_filename: Optional[str] = None,
-        show_plot: bool = False
-    ):
-        """
-        Plot different line plot from pre-aggregated final values.
-
-        Args:
-            data_matrices: {'cost': array, 'welfare': array, 'coop_freq': array} with shape [theta, param]
-            strategy_params: List of strategy param labels
-            theta_values: List of theta values
-            title: Plot title
-        """
-        
-        if 'pc' in strategy_params[0]: # plot for POP
-            return self._plot_diff_plot_from_agg_pop(
-                data_matrices, strategy_params, theta_values, a_values, title, output_filename, show_plot
-            )
-        return self._plot_diff_plot_from_agg_neb(
-            data_matrices, strategy_params, theta_values, a_values, title, output_filename, show_plot
+    for col_idx, a in enumerate(a_values):
+        welfare_a = adjusted_welfare_for_efficiency(
+            data_matrices['welfare'], data_matrices['cost'], a
         )
+        render(axes[1, col_idx], welfare_a,
+               f'Social Welfare ($a = {a}$)', show_ylabel=(col_idx == 0))
 
-    def _plot_diff_plot_from_agg_pop(
-        self,
-        data_matrices: Dict[str, np.ndarray],
-        strategy_params: List[str],
-        theta_values: List[float],
-        a_values: List[float],
-        title: str = '',
-        output_filename: Optional[str] = None,
-        show_plot: bool = False
-    ):
-        """
-        Plot POP line plot from pre-aggregated final values.
+    if title:
+        fig.suptitle(title, fontsize=14, y=1.02)
 
-        Args:
-            data_matrices: {'cost': array, 'welfare': array, 'coop_freq': array} with shape [theta, param]
-            strategy_params: List of strategy param labels
-            theta_values: List of theta values
-            title: Plot title
-        """
-        n_cols = len(a_values)
-        fig, axes = plt.subplots(1, n_cols, figsize=(15, 4))
+    plt.tight_layout()
 
-        for i, a in enumerate(a_values):
-            cost_a = data_matrices['cost'] / a
-            welfare_a = data_matrices['welfare'] - cost_a
-            coop_freq_nc3_to_compare = data_matrices['coop_freq'][:, len(strategy_params) - 1]
-            cost_nc3_to_compare = cost_a[:, len(strategy_params) - 1]
-            sw_nc3_to_compare = welfare_a[:, len(strategy_params) - 1]
-            cost_nc3_min = theta_values[np.where(cost_nc3_to_compare == min([cost_nc3_to_compare[i] for i in np.where(coop_freq_nc3_to_compare > 90)[0]]))[0][0]]
-            sw_nc3_max = theta_values[np.where(sw_nc3_to_compare/max(sw_nc3_to_compare) == 1)[0][0]]
+    finalize_figure(fig, output_filename, DPI, show_plot)
+    return output_filename
 
-            coef = 1
-            if (cost_nc3_min > sw_nc3_max):
-                coef = -1
-            if (cost_nc3_min == sw_nc3_max):
-                coef = 0
+def plot_diff_plot_from_agg(
+    data_matrices: MetricMatrices,
+    strategy_params: List[str],
+    theta_values: List[float],
+    a_values: List[float],
+    strategy: str,
+    title: str = '',
+    output_filename: Optional[str] = None,
+    show_plot: bool = False
+):
+    """
+    Plot different line plot from pre-aggregated final values.
 
-            axes[i].plot(sorted(theta_values), (cost_nc3_to_compare - min(cost_nc3_to_compare))/(max(cost_nc3_to_compare) - min(cost_nc3_to_compare)), color='lightcoral', label='Total Cost')
-            axes[i].plot(sorted(theta_values), (sw_nc3_to_compare - min(sw_nc3_to_compare))/(max(sw_nc3_to_compare) - min(sw_nc3_to_compare)), color='deepskyblue', label='Social Welfare')
-            axes[i].plot(sorted(theta_values), (coop_freq_nc3_to_compare/100), linestyle='-.', color='darkcyan', label='Coop Freq')
-            # axes[i].axhline(0.9, color='gray', linestyle=':', alpha=0.5, label='>90% coop')
-            axes[i].axhline(0.9, xmin=(0.2)/(coef*(sw_nc3_max - cost_nc3_min) + 0.4), xmax=(coef*(sw_nc3_max-cost_nc3_min)+0.2)/(coef*(sw_nc3_max - cost_nc3_min) + 0.4), color ='limegreen', linestyle='--')
-            axes[i].axvline(cost_nc3_min, linestyle=(0, (3, 3)), color='lightcoral')
-            axes[i].axvline(sw_nc3_max, linestyle=(2, (3, 3)), color='deepskyblue')
-            axes[i].text(cost_nc3_min+0.01, 0.5, round(cost_nc3_min, 1), rotation=90, va='center')
-            axes[i].text(sw_nc3_max+0.01, 0.5, round(sw_nc3_max, 1), rotation=90, va='center')
-            axes[i].text((cost_nc3_min + sw_nc3_max)/2, 0.92, 'Δθ', va='center')
-            axes[i].plot([cost_nc3_min], [0.9], color='limegreen', marker="o")
-            axes[i].plot([sw_nc3_max], [0.9], color='limegreen', marker="o")
-            if (coef == -1):
-                axes[i].set_xlim(sw_nc3_max - 0.2, cost_nc3_min + 0.2)
-            elif (coef == 1):
-                axes[i].set_xlim(cost_nc3_min - 0.2, sw_nc3_max + 0.2)
-            else:
-                pass
-            axes[i].set_ylim(0, 1.1)
-            axes[i].set_xlabel('Per-individual investment cost, θ', fontsize=self.config.label_fontsize)
-            axes[i].set_ylabel('Normalized Value', fontsize=self.config.label_fontsize)
-            axes[i].set_title(f'{strategy_params[len(strategy_params) - 1]}, a={a}', fontsize=self.config.title_fontsize, fontweight='bold')
+    POP variant (single row) plots only the last strategy param;
+    NEB variant (two rows) plots the last two.
 
-        handles, labels = axes[0].get_legend_handles_labels()
-        fig.legend(handles, labels, loc='upper center', ncol=3, bbox_to_anchor=(0.5, 1))
-        
-        if title:
-            fig.suptitle(title, fontsize=14, y=1.05)
-        
-        plt.tight_layout()
+    Args:
+        data_matrices: {'cost': array, 'welfare': array, 'coop_freq': array} with shape [theta, param]
+        strategy: 'pop' or 'neb'
+        strategy_params: List of strategy param labels
+        theta_values: List of theta values
+        title: Plot title
+    """
+    is_pop = strategy == 'pop'
+    if is_pop:
+        param_indices = [len(strategy_params) - 1]
+        figsize = (15, 4)
+    else:
+        param_indices = [len(strategy_params) - 2, len(strategy_params) - 1]
+        figsize = (15, 8)
 
-        if output_filename:
-            save_figure(fig, output_filename, self.config.dpi, show_plot)
-        else:
-            plt.show()
+    n_rows, n_cols = len(param_indices), len(a_values)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+    if n_rows == 1:
+        axes = axes[np.newaxis, :]
 
-        return output_filename
+    sorted_thetas = sorted(theta_values)
 
-    def _plot_diff_plot_from_agg_neb(
-        self,
-        data_matrices: Dict[str, np.ndarray],
-        strategy_params: List[str],
-        theta_values: List[float],
-        a_values: List[float],
-        title: str = '',
-        output_filename: Optional[str] = None,
-        show_plot: bool = False
-    ):
-        """
-        Plot NEB line plot from pre-aggregated final values.
+    for row, sp_idx in enumerate(param_indices):
+        for col, a in enumerate(a_values):
+            tradeoff = analyze_cost_welfare_tradeoff(
+                cost=data_matrices['cost'][:, sp_idx],
+                welfare=data_matrices['welfare'][:, sp_idx],
+                coop_freq=data_matrices['coop_freq'][:, sp_idx],
+                theta_values=theta_values,
+                a=a,
+            )
+            _draw_diff_panel(
+                axes[row, col], tradeoff,
+                coop=data_matrices['coop_freq'][:, sp_idx],
+                sorted_thetas=sorted_thetas,
+                sp_label=strategy_params[sp_idx],
+                a=a,
+                set_ylim_top=is_pop,
+            )
 
-        Args:
-            data_matrices: {'cost': array, 'welfare': array, 'coop_freq': array} with shape [theta, param]
-            strategy_params: List of strategy param labels
-            theta_values: List of theta values
-            title: Plot title
-        """
-        n_cols = len(a_values)
-        n_rows = 2 # Plot for nc=3 and nc=4
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 8))
-        for i in range(n_rows):
-            for j in range(n_cols):
-                a = a_values[j]
-                cost_a = data_matrices['cost'] / a
-                welfare_a = data_matrices['welfare'] - cost_a
-                coop_freq_nc3_to_compare = data_matrices['coop_freq'][:, len(strategy_params) - 2 + i]
-                cost_nc3_to_compare = cost_a[:, len(strategy_params) - 2 + i]
-                sw_nc3_to_compare = welfare_a[:, len(strategy_params) - 2 + i]
-                cost_nc3_min = theta_values[np.where(cost_nc3_to_compare == min([cost_nc3_to_compare[i] for i in np.where(coop_freq_nc3_to_compare > 90)[0]]))[0][0]]
-                sw_nc3_max = theta_values[np.where(sw_nc3_to_compare/max(sw_nc3_to_compare) == 1)[0][0]]
-                
-                coef = 1
-                if (cost_nc3_min > sw_nc3_max):
-                    coef = -1
-                if (cost_nc3_min == sw_nc3_max):
-                    coef = 0
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper center', ncol=3, bbox_to_anchor=(0.5, 1))
 
-                axes[i][j].plot(sorted(theta_values), (cost_nc3_to_compare - min(cost_nc3_to_compare))/(max(cost_nc3_to_compare) - min(cost_nc3_to_compare)), color='lightcoral', label='Total Cost')
-                axes[i][j].plot(sorted(theta_values), (sw_nc3_to_compare - min(sw_nc3_to_compare))/(max(sw_nc3_to_compare) - min(sw_nc3_to_compare)), color='deepskyblue', label='Social Welfare')
-                axes[i][j].plot(sorted(theta_values), (coop_freq_nc3_to_compare/100), linestyle='-.', color='darkcyan', label='Coop Freq')
-                # axes[i][j].axhline(0.9, color='gray', linestyle=':', alpha=0.5, label='>90% coop')
-                axes[i][j].axhline(0.9, xmin=(0.2)/(coef*(sw_nc3_max - cost_nc3_min) + 0.4), xmax=(coef*(sw_nc3_max-cost_nc3_min)+0.2)/(coef*(sw_nc3_max - cost_nc3_min) + 0.4), color ='limegreen', linestyle='--')
-                axes[i][j].axvline(cost_nc3_min, linestyle=(0, (3, 3)), color='lightcoral')
-                axes[i][j].axvline(sw_nc3_max, linestyle=(2, (3, 3)), color='deepskyblue')
-                axes[i][j].text(cost_nc3_min+0.01, 0.5, round(cost_nc3_min, 1), rotation=90, va='center')
-                axes[i][j].text(sw_nc3_max+0.01, 0.5, round(sw_nc3_max, 1), rotation=90, va='center')
-                axes[i][j].text((cost_nc3_min + sw_nc3_max)/2, 0.92, 'Δθ', va='center')
-                axes[i][j].plot([cost_nc3_min], [0.9], color='limegreen', marker="o")
-                axes[i][j].plot([sw_nc3_max], [0.9], color='limegreen', marker="o")
-                if (coef == 1):
-                    axes[i][j].set_xlim(cost_nc3_min - 0.2, sw_nc3_max + 0.2)
-                elif (coef == -1):
-                    axes[i][j].set_xlim(sw_nc3_max - 0.2, cost_nc3_min + 0.2)
-                elif (coef == 0):
-                    pass
-                axes[i][j].set_xlabel('Per-individual investment cost, θ', fontsize=self.config.label_fontsize)
-                axes[i][j].set_ylabel('Normalized Value', fontsize=self.config.label_fontsize)
-                axes[i][j].set_title(f'{strategy_params[len(strategy_params) - 2 + i]}, a={a}', fontsize=self.config.title_fontsize, fontweight='bold')
+    if title:
+        fig.suptitle(title, fontsize=14, y=1.05)
 
-        handles, labels = axes[0][0].get_legend_handles_labels()
-        fig.legend(handles, labels, loc='upper center', ncol=3, bbox_to_anchor=(0.5, 1))
+    plt.tight_layout()
 
-        if title:
-            fig.suptitle(title, fontsize=14, y=1.05)
+    finalize_figure(fig, output_filename, DPI, show_plot)
+    return output_filename
 
-        plt.tight_layout()
+def plot_optimal_theta_summary(
+    records: List[OptimalRecord],
+    a_values: List[float],
+    title: str = '',
+    output_filename: Optional[str] = None,
+    show_plot: bool = False
+):
+    """
+    Plot grid showing θ* vs strategy params. Scatter only (no lines).
+    Filled markers = SW optimal, hollow markers = Cost optimal.
+    Rows = a values, Columns = strategy. One figure per game.
+    """
+    games = sorted({r.game for r in records})
+    output_files = []
+
+    for game in games:
+        n_rows = len(a_values)
+        fig, axes = plt.subplots(n_rows, 2, figsize=(10, 4 * n_rows))
+        if n_rows == 1:
+            axes = axes[np.newaxis, :]
+
+        for row_idx, a in enumerate(a_values):
+            for col, strategy in enumerate(['pop', 'neb']):
+                cell = [r for r in records if r.game == game and r.a == a and r.strategy == strategy]
+                _draw_optimal_panel(
+                    axes[row_idx, col],
+                    cell,
+                    strategy=strategy, a=a,
+                    is_first_row=(row_idx == 0),
+                    is_first_col=(col == 0),
+                )
+
+        fig.legend(handles=_make_optimal_legend(_GAME_PARAM_DISPLAY[game]),
+                   loc='upper center', ncol=5, bbox_to_anchor=(0.5, 1.0),
+                   fontsize=10, frameon=True)
+
+        game_title = f'{title} - {_GAME_LABELS[game]}' if title else _GAME_LABELS[game]
+        fig.suptitle(game_title, fontsize=14, y=1.05)
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
 
         if output_filename:
-            save_figure(fig, output_filename, self.config.dpi, show_plot)
+            base, ext = os.path.splitext(output_filename)
+            out = f'{base}_{game}{ext}'
+            output_files.append(out)
         else:
-            plt.show()
+            out = None
+        finalize_figure(fig, out, DPI, show_plot)
 
-        return output_filename
-
-    def plot_optimal_theta_summary(
-        self,
-        optimal_sw: Dict[float, Dict[str, Dict[str, Dict[str, Dict[str, float]]]]],
-        optimal_cost: Dict[float, Dict[str, Dict[str, Dict[str, Dict[str, float]]]]],
-        a_values: List[float],
-        title: str = '',
-        output_filename: Optional[str] = None,
-        show_plot: bool = False
-    ):
-        """
-        Plot grid showing θ* vs strategy params. Scatter only (no lines).
-        Filled markers = SW optimal, hollow markers = Cost optimal.
-        Rows = a values, Columns = game × strategy.
-
-        Args:
-            optimal_sw: {a: {game: {strategy: {game_param: {sp: theta_star}}}}}
-            optimal_cost: same structure but for cost
-            a_values: List of efficiency values
-        """
-        game_labels = {'pd': 'PD', 'pgg': 'PGG'}
-        strategy_labels = {'pop': 'POP', 'neb': 'NEB'}
-        game_param_display = {
-            'pd': ['b=1.2', 'b=1.8', 'b=2.0'],
-            'pgg': ['r=1.5', 'r=3.0', 'r=4.5'],
-        }
-
-        colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
-        markers = ['o', 's', '^']
-
-        games = sorted(optimal_sw[a_values[0]].keys())
-        output_files = []
-
-        for game in games:
-            n_rows = len(a_values)
-            fig, axes = plt.subplots(n_rows, 2, figsize=(10, 4 * n_rows))
-            if n_rows == 1:
-                axes = axes[np.newaxis, :]
-
-            for row_idx, a in enumerate(a_values):
-                for col, strategy in enumerate(['pop', 'neb']):
-                    ax = axes[row_idx, col]
-                    sw_strat = optimal_sw.get(a, {}).get(game, {}).get(strategy, {})
-                    cost_strat = optimal_cost.get(a, {}).get(game, {}).get(strategy, {})
-
-                    if not sw_strat:
-                        ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
-                        continue
-
-                    # Spread annotations per game_param index to avoid overlap
-                    sw_offsets = [(-18, 8), (5, 8), (12, -10)]
-                    cost_offsets = [(-18, -12), (5, -12), (12, 4)]
-
-                    for idx, game_param in enumerate(sorted(sw_strat.keys())):
-                        sp_data_sw = sw_strat[game_param]
-                        sp_data_cost = cost_strat.get(game_param, {})
-
-                        sp_vals = sorted(sp_data_sw.keys(), key=lambda x: float(x.split('=')[1]))
-                        x_vals = [float(sp.split('=')[1]) for sp in sp_vals]
-                        y_sw = [sp_data_sw[sp] for sp in sp_vals]
-
-                        color = colors[idx % len(colors)]
-                        marker = markers[idx % len(markers)]
-                        sw_off = sw_offsets[idx % len(sw_offsets)]
-                        cost_off = cost_offsets[idx % len(cost_offsets)]
-
-                        for sp_i, sp in enumerate(sp_vals):
-                            x = x_vals[sp_i]
-                            theta_sw = y_sw[sp_i]
-                            cost_info = sp_data_cost.get(sp, {})
-                            feasible = cost_info.get('feasible', True)
-
-                            if not feasible:
-                                continue
-
-                            # SW point (filled)
-                            ax.scatter([x], [theta_sw], marker=marker, color=color, s=60, zorder=3)
-                            ax.annotate(f'{theta_sw:.1f}', (x, theta_sw),
-                                        textcoords='offset points', xytext=sw_off,
-                                        fontsize=5.5, color=color)
-
-                            # Cost point (hollow)
-                            theta_c = cost_info.get('theta', 0)
-                            ax.scatter([x], [theta_c], marker=marker, facecolors='none',
-                                       edgecolors=color, s=60, linewidths=1.5, zorder=3)
-                            ax.annotate(f'{theta_c:.1f}', (x, theta_c),
-                                        textcoords='offset points', xytext=cost_off,
-                                        fontsize=5.5, color=color)
-
-                    ax.set_xlabel('$p_C$' if strategy == 'pop' else '$n_C$', fontsize=self.config.label_fontsize)
-                    ax.set_xticks(x_vals)
-                    ax.grid(True, alpha=0.3)
-                    ax.autoscale(axis='y')
-                    y_min, y_max = ax.get_ylim()
-                    margin = (y_max - y_min) * 0.15
-                    ax.set_ylim(y_min - margin, y_max + margin)
-
-                    if col == 0:
-                        ax.set_ylabel(f'a={a}\nθ*', fontsize=self.config.label_fontsize)
-                    if row_idx == 0:
-                        ax.set_title(strategy_labels[strategy],
-                                     fontsize=self.config.title_fontsize)
-
-            from matplotlib.lines import Line2D
-            legend_handles = []
-            for idx, param_label in enumerate(game_param_display[game]):
-                legend_handles.append(Line2D([0], [0], marker=markers[idx], color='w',
-                                             markerfacecolor=colors[idx], markersize=8,
-                                             label=param_label))
-            legend_handles.append(Line2D([0], [0], marker='o', color='w',
-                                         markerfacecolor='gray', markersize=8, label='Filled = SW'))
-            legend_handles.append(Line2D([0], [0], marker='o', color='w',
-                                         markerfacecolor='none', markeredgecolor='gray',
-                                         markeredgewidth=1.5, markersize=8, label='Hollow = Cost'))
-            fig.legend(handles=legend_handles, loc='upper center', ncol=5,
-                       bbox_to_anchor=(0.5, 1.0), fontsize=10, frameon=True)
-
-            game_title = f'{title} — {game_labels[game]}' if title else game_labels[game]
-            fig.suptitle(game_title, fontsize=14, y=1.05)
-            plt.tight_layout(rect=[0, 0, 1, 0.96])
-
-            if output_filename:
-                base, ext = os.path.splitext(output_filename)
-                out = f'{base}_{game}{ext}'
-                save_figure(fig, out, self.config.dpi, show_plot)
-                output_files.append(out)
-            else:
-                plt.show()
-
-        return output_files
+    return output_files
