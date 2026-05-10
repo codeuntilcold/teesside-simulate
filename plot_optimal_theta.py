@@ -6,10 +6,8 @@ import numpy as np
 from plot_from_agg import detect_strategy_params, build_metric_matrices
 from plotting_utils_v2 import plot_optimal_theta_summary, MetricMatrices, OptimalRecord
 
-GAMES = {
-    'pd': {'params': ['b=1.2', 'b=1.8', 'b=2.0']},
-    'pgg': {'params': ['r=1.5', 'r=3.0', 'r=4.5']},
-}
+DEFAULT_PD_PARAMS = ['b=1.2', 'b=1.8']  # main-text default; b=2.0 lives in appendix
+DEFAULT_PGG_PARAMS = ['r=1.5', 'r=3.0', 'r=4.5']
 STRATEGIES = ['pop', 'neb']
 COOP_THRESHOLD = 90.0
 
@@ -62,13 +60,13 @@ def find_optimal_thetas_per_a(data_matrices: MetricMatrices, thetas, a_values):
     return {'sw': sw_result, 'cost': cost_result}
 
 
-def build_all_optimal_data(agg_dir, a_values) -> List[OptimalRecord]:
+def build_all_optimal_data(agg_dir, a_values, games_config) -> List[OptimalRecord]:
     """Build θ* for SW and cost for all (a, game, strategy, game_param, sp) cells."""
     records: List[OptimalRecord] = []
 
-    for game, game_cfg in GAMES.items():
+    for game, params in games_config.items():
         for strategy in STRATEGIES:
-            for game_param in game_cfg['params']:
+            for game_param in params:
                 all_params = detect_strategy_params(agg_dir, game, strategy, game_param)
                 if not all_params:
                     continue
@@ -106,14 +104,19 @@ def main():
     parser.add_argument('--agg-dir', default='data_agg_det_go', help='Aggregated data directory')
     parser.add_argument('--a-values', type=float, nargs='+', default=[0.5, 1.0, 1.5],
                         help='Efficiency a values')
+    parser.add_argument('--pd-params', nargs='+', default=DEFAULT_PD_PARAMS,
+                        help='PD game_params to include (default: main-text view, no b=2.0)')
+    parser.add_argument('--pgg-params', nargs='+', default=DEFAULT_PGG_PARAMS,
+                        help='PGG game_params to include')
     parser.add_argument('--output', default='fig/det/optimal_theta_summary.png', help='Output file')
     parser.add_argument('--show', action='store_true', help='Show plot')
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
 
-    print("Building optimal θ data for all configurations...")
-    records = build_all_optimal_data(args.agg_dir, args.a_values)
+    games_config = {'pd': args.pd_params, 'pgg': args.pgg_params}
+    print(f"Building optimal θ data for: {games_config}")
+    records = build_all_optimal_data(args.agg_dir, args.a_values, games_config)
 
     print("\nGenerating plot...")
     plot_optimal_theta_summary(

@@ -48,9 +48,9 @@ COLORS = {
 MAX_GENERATIONS = 50
 POPULATION_SIZE = 10000
 DPI = 300
-LABEL_FONTSIZE = 14
-TICK_FONTSIZE = 11
-TITLE_FONTSIZE = 13
+LABEL_FONTSIZE = 16
+TICK_FONTSIZE = 13
+TITLE_FONTSIZE = 15
 COLOR_MAP = "inferno"
 COLOR_INTERP = "bilinear"
 
@@ -174,10 +174,22 @@ def analyze_cost_welfare_tradeoff(
 
 
 _GAME_LABELS = {'pd': 'PD', 'pgg': 'PGG'}
-_GAME_PARAM_DISPLAY = {
-    'pd': ['b=1.2', 'b=1.8', 'b=2.0'],
-    'pgg': ['r=1.5', 'r=3.0', 'r=4.5'],
-}
+
+
+def latex_sp(sp: str) -> str:
+    """`pc=1` -> `$p_C=1$`; `nc=4` -> `$n_C=4$`; passthrough otherwise."""
+    if sp.startswith('pc='):
+        return '$p_C=' + sp[3:] + '$'
+    if sp.startswith('nc='):
+        return '$n_C=' + sp[3:] + '$'
+    return sp
+
+
+def latex_game_param(gp: str) -> str:
+    """`b=1.8` -> `$b=1.8$`, `r=3.0` -> `$r=3.0$`."""
+    return '$' + gp + '$'
+
+
 _OPTIMAL_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c']
 _OPTIMAL_MARKERS = ['o', 's', '^']
 _OPTIMAL_SW_OFFSETS = [(-18, 8), (5, 8), (12, -10)]
@@ -243,7 +255,7 @@ def _draw_diff_panel(ax, tradeoff: CostWelfareTradeoff, coop: np.ndarray,
 
     ax.set_xlabel('Per-individual investment cost, θ')
     ax.set_ylabel('Normalized Value')
-    ax.set_title(f'{sp_label}, a={a}')
+    ax.set_title(f'{latex_sp(sp_label)}, $a={a}$')
 
 
 def _draw_optimal_panel(ax, cell_records: List[OptimalRecord],
@@ -274,13 +286,13 @@ def _draw_optimal_panel(ax, cell_records: List[OptimalRecord],
             ax.scatter([x], [r.theta_sw], marker=marker, color=color, s=60, zorder=3)
             ax.annotate(f'{r.theta_sw:.1f}', (x, r.theta_sw),
                         textcoords='offset points', xytext=sw_off,
-                        fontsize=5.5, color=color)
+                        fontsize=7, color=color)
 
             ax.scatter([x], [r.theta_cost], marker=marker, facecolors='none',
                        edgecolors=color, s=60, linewidths=1.5, zorder=3)
             ax.annotate(f'{r.theta_cost:.1f}', (x, r.theta_cost),
                         textcoords='offset points', xytext=cost_off,
-                        fontsize=5.5, color=color)
+                        fontsize=7, color=color)
 
     ax.set_xlabel('$p_C$' if strategy == 'pop' else '$n_C$')
     ax.set_xticks(x_vals)
@@ -303,7 +315,8 @@ def _make_optimal_legend(game_param_labels: List[str]):
     handles = []
     for idx, label in enumerate(game_param_labels):
         handles.append(Line2D([0], [0], marker=_OPTIMAL_MARKERS[idx], color='w',
-                              markerfacecolor=_OPTIMAL_COLORS[idx], markersize=8, label=label))
+                              markerfacecolor=_OPTIMAL_COLORS[idx], markersize=8,
+                              label=latex_game_param(label)))
     handles.append(Line2D([0], [0], marker='o', color='w',
                           markerfacecolor='gray', markersize=8, label='Filled = SW'))
     handles.append(Line2D([0], [0], marker='o', color='w',
@@ -385,19 +398,19 @@ def plot_timeseries_from_agg(
         ax_freq.set_ylim(0, 100)
         ax_freq.set_yticks([0, 20, 40, 60, 80, 100])
         if is_first:
-            ax_freq.set_ylabel('frequency', fontsize=10)
+            ax_freq.set_ylabel('frequency', fontsize=12)
         if show_std:
             ax_freq.fill_between(generations, coop['mean'] - coop['std'],
                                  coop['mean'] + coop['std'], color='white', alpha=0.3)
         if col_idx == n_cols - 1:
-            ax_freq.legend(loc='upper right', fontsize=8, frameon=True, fancybox=False)
+            ax_freq.legend(loc='upper right', fontsize=10, frameon=True, fancybox=False)
         ax_freq.set_title(sp)
 
         ax_cost = axes[1, col_idx]
         fill_band(ax_cost, generations, cost['mean'], colors['cost'])
         style_timeseries_ax(ax_cost, max_gen, tick_fontsize)
         if is_first:
-            ax_cost.set_ylabel('cost', fontsize=10)
+            ax_cost.set_ylabel('cost', fontsize=12)
         if show_std:
             ax_cost.fill_between(generations, cost['lower'], cost['upper'],
                                  color=colors['cost'], alpha=0.3)
@@ -405,15 +418,15 @@ def plot_timeseries_from_agg(
         ax_welfare = axes[2, col_idx]
         fill_band(ax_welfare, generations, welfare['mean'], colors['welfare'])
         style_timeseries_ax(ax_welfare, max_gen, tick_fontsize)
-        ax_welfare.set_xlabel('generation', fontsize=10)
+        ax_welfare.set_xlabel('generation', fontsize=12)
         if is_first:
-            ax_welfare.set_ylabel('SW (a=1)', fontsize=10)
+            ax_welfare.set_ylabel('SW (a=1)', fontsize=12)
         if show_std:
             ax_welfare.fill_between(generations, welfare['lower'], welfare['upper'],
                                     color=colors['welfare'], alpha=0.3)
 
     if title:
-        fig.suptitle(title, fontsize=12, y=1.02)
+        fig.suptitle(title, fontsize=16, y=1.02)
 
     finalize_figure(fig, output_filename, DPI, show_plot)
     return output_filename
@@ -445,9 +458,10 @@ def plot_heatmap_grid_from_agg(
     y_tick_pos = list(range(0, len(theta_values), tick_step))
     y_tick_labels = [f"{theta_values[i]:.1f}" for i in y_tick_pos]
 
-    def render(ax, matrix, panel_title, show_ylabel=False):
+    def render(ax, matrix, panel_title, show_ylabel=False, vmin=None, vmax=None):
         im = ax.imshow(matrix, aspect='auto', cmap=COLOR_MAP,
-                       origin='lower', interpolation=COLOR_INTERP)
+                       origin='lower', interpolation=COLOR_INTERP,
+                       vmin=vmin, vmax=vmax)
         ax.set_title(panel_title)
         ax.set_xticks(range(len(strategy_params)))
         ax.set_xticklabels(x_tick_labels, fontsize=TICK_FONTSIZE)
@@ -464,15 +478,19 @@ def plot_heatmap_grid_from_agg(
     for col_idx in range(2, n_cols):
         axes[0, col_idx].axis('off')
 
-    for col_idx, a in enumerate(a_values):
-        welfare_a = adjusted_welfare_for_efficiency(
-            data_matrices['welfare'], data_matrices['cost'], a
-        )
+    # Bottom row: SW for each a, sharing colormap range so per-a magnitudes are comparable.
+    sw_arrays = [adjusted_welfare_for_efficiency(data_matrices['welfare'], data_matrices['cost'], a)
+                 for a in a_values]
+    sw_vmin = min(arr.min() for arr in sw_arrays)
+    sw_vmax = max(arr.max() for arr in sw_arrays)
+    for col_idx, (a, welfare_a) in enumerate(zip(a_values, sw_arrays)):
         render(axes[1, col_idx], welfare_a,
-               f'Social Welfare ($a = {a}$)', show_ylabel=(col_idx == 0))
+               f'Social Welfare ($a = {a}$)',
+               show_ylabel=(col_idx == 0),
+               vmin=sw_vmin, vmax=sw_vmax)
 
     if title:
-        fig.suptitle(title, fontsize=14, y=1.02)
+        fig.suptitle(title, fontsize=16, y=1.02)
 
     plt.tight_layout()
 
@@ -539,7 +557,7 @@ def plot_diff_plot_from_agg(
     fig.legend(handles, labels, loc='upper center', ncol=3, bbox_to_anchor=(0.5, 1))
 
     if title:
-        fig.suptitle(title, fontsize=14, y=1.05)
+        fig.suptitle(title, fontsize=16, y=1.05)
 
     plt.tight_layout()
 
@@ -578,12 +596,14 @@ def plot_optimal_theta_summary(
                     is_first_col=(col == 0),
                 )
 
-        fig.legend(handles=_make_optimal_legend(_GAME_PARAM_DISPLAY[game]),
-                   loc='upper center', ncol=5, bbox_to_anchor=(0.5, 1.0),
-                   fontsize=10, frameon=True)
+        game_params = sorted({r.game_param for r in records if r.game == game},
+                             key=lambda gp: float(gp.split('=')[1]))
+        fig.legend(handles=_make_optimal_legend(game_params),
+                   loc='upper center', ncol=len(game_params) + 2, bbox_to_anchor=(0.5, 1.0),
+                   fontsize=12, frameon=True)
 
         game_title = f'{title} - {_GAME_LABELS[game]}' if title else _GAME_LABELS[game]
-        fig.suptitle(game_title, fontsize=14, y=1.05)
+        fig.suptitle(game_title, fontsize=16, y=1.05)
         plt.tight_layout(rect=[0, 0, 1, 0.96])
 
         if output_filename:

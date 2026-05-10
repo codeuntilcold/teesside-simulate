@@ -4,6 +4,7 @@ from plotting_utils_v2 import (
     plot_timeseries_from_agg,
     plot_heatmap_grid_from_agg,
     plot_diff_plot_from_agg,
+    latex_game_param,
 )
 import numpy as np
 import argparse
@@ -38,7 +39,7 @@ def load_agg_for_plotting(agg_dir, game_type, strategy, game_param, strategy_par
 def plot_timeseries(agg_dir, game_type, strategy, game_param, strategy_params, theta, output_file=None, show_std=True):
     """Load data and plot timeseries."""
     agg_data = load_agg_for_plotting(agg_dir, game_type, strategy, game_param, strategy_params)
-    title = f'{game_type.upper()} {strategy.upper()} {game_param}, θ={theta}'
+    title = f'{game_type.upper()} {strategy.upper()} {latex_game_param(game_param)}, θ={theta}'
 
     plot_timeseries_from_agg(agg_data, strategy_params, theta, title, show_std, output_file)
 
@@ -102,14 +103,14 @@ def build_metric_matrices(agg_dir, game_type, strategy, game_param, strategy_par
 def plot_efficiency_heatmap(agg_dir, game_type, strategy, game_param, strategy_params, a_values, output_file=None):
     """Load data and plot efficiency heatmap grid for different 'a' values."""
     data_matrices, thetas = build_metric_matrices(agg_dir, game_type, strategy, game_param, strategy_params)
-    title = f"Efficiency Comparison - {game_type.upper()} {strategy.upper()} {game_param}"
+    title = f"Efficiency Comparison - {game_type.upper()} {strategy.upper()} {latex_game_param(game_param)}"
     plot_heatmap_grid_from_agg(data_matrices, strategy_params, thetas, a_values, strategy, title, output_file)
 
 
 def plot_diff_line_chart(agg_dir, game_type, strategy, game_param, strategy_params, a_values, output_file=None):
     """Load data and plot diff line chart grid for different 'a' values."""
     data_matrices, thetas = build_metric_matrices(agg_dir, game_type, strategy, game_param, strategy_params)
-    title = f"Diff Comparison - {game_type.upper()} {strategy.upper()} {game_param}"
+    title = f"Diff Comparison - {game_type.upper()} {strategy.upper()} {latex_game_param(game_param)}"
     plot_diff_plot_from_agg(data_matrices, strategy_params, thetas, a_values, strategy, title, output_file)
 
 
@@ -125,7 +126,10 @@ if __name__ == "__main__":
     parser.add_argument('--a-values', type=float, nargs='+', default=[0.5, 1, 1.5], help='Efficiency values (for efficiency plot)')
     parser.add_argument('--output', help='Output file')
     parser.add_argument('--fig-prefix', default='', help='Optional subdirectory under fig/ (e.g. "cpp" -> fig/cpp/)')
-    parser.add_argument('--full-range', action='store_true', help='For POP heatmap/efficiency: use all p_C values instead of the default >=0.9 filter (for appendix figures)')
+    parser.add_argument('--pc-values', type=float, nargs='+', default=None,
+                        help='POP heatmap/efficiency: explicit pc values (e.g. --pc-values 0.25 0.5 0.75 1.0). '
+                             'If omitted, defaults to pc>=0.9 (main-text view); '
+                             'use --pc-values <values> to render appendix or alternative ranges.')
     args = parser.parse_args()
 
     # Auto-detect strategy params from files
@@ -136,13 +140,13 @@ if __name__ == "__main__":
 
     # Filter params based on plot type (POP only)
     if args.strategy == 'pop':
-        if args.plot_type == 'timeseries' or args.plot_type == 'diff':
-            # Timeseries: only 0.25, 0.5, 0.75, 1.0
+        if args.plot_type in ('timeseries', 'diff'):
+            # Timeseries/diff: only 0.25, 0.5, 0.75, 1.0
             allowed = {0.25, 0.5, 0.75, 1.0}
             strategy_params = [p for p in all_params if float(p.split('=')[1]) in allowed]
-        elif args.full_range:
-            # Appendix view: use all p_C values
-            strategy_params = all_params
+        elif args.pc_values:
+            allowed = set(args.pc_values)
+            strategy_params = [p for p in all_params if float(p.split('=')[1]) in allowed]
         else:
             # Main-text heatmap: only >= 0.9
             strategy_params = [p for p in all_params if float(p.split('=')[1]) >= 0.9]
