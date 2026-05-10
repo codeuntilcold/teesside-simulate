@@ -84,15 +84,16 @@ def build_total_matrix(agg_dir, game_type, strategy, game_param, strategy_params
 def build_metric_matrices(agg_dir, game_type, strategy, game_param, strategy_params):
     """Build {cost, welfare, coop_freq} matrices, shape [theta, param].
 
-    cost and welfare are cumulative (sum across generations) so the heatmap
-    formula welfare + (a-1)*cost computes a well-defined cumulative SW.
-    coop_freq is the final-generation value (steady-state cooperation level).
+    cost is cumulative (sum across generations); welfare and coop_freq are
+    final-generation values (steady-state). This matches the paper's per-gen
+    SW definition: at hypothetical a, SW(a) = welfare_final + (a-1)·cost_total
+    is interpreted as steady-state welfare with a one-time cost adjustment.
     """
     cost_matrix, thetas = build_total_matrix(
         agg_dir, game_type, strategy, game_param, strategy_params, 'cost'
     )
-    welfare_matrix, _ = build_total_matrix(
-        agg_dir, game_type, strategy, game_param, strategy_params, 'social_welfare'
+    welfare_matrix, _ = build_heatmap_matrix(
+        agg_dir, game_type, strategy, game_param, strategy_params, 'social_welfare', population_size=1
     )
     coop_matrix, _ = build_heatmap_matrix(
         agg_dir, game_type, strategy, game_param, strategy_params, 'cooperator_frequency'

@@ -6,7 +6,7 @@ import numpy as np
 from plot_from_agg import detect_strategy_params, build_metric_matrices
 from plotting_utils_v2 import plot_optimal_theta_summary, MetricMatrices, OptimalRecord
 
-DEFAULT_PD_PARAMS = ['b=1.2', 'b=1.8']  # main-text default; b=2.0 lives in appendix
+DEFAULT_PD_PARAMS = ['b=1.2', 'b=1.8', 'b=2.0']
 DEFAULT_PGG_PARAMS = ['r=1.5', 'r=3.0', 'r=4.5']
 STRATEGIES = ['pop', 'neb']
 COOP_THRESHOLD = 90.0
@@ -15,9 +15,8 @@ COOP_THRESHOLD = 90.0
 def find_optimal_thetas_per_a(data_matrices: MetricMatrices, thetas, a_values):
     """
     For each a value and each strategy_param column, find:
-      - SW: theta that maximizes welfare_a
-      - Cost: lowest theta where coop > 90%.
-              If never reachable, use theta at max coop (flagged as infeasible).
+      - SW: theta that maximizes welfare_a, regardless of coop level
+      - Cost: lowest theta where coop > 90%
 
     Returns: {
         'sw': {a: [theta_stars]},
@@ -33,7 +32,6 @@ def find_optimal_thetas_per_a(data_matrices: MetricMatrices, thetas, a_values):
         welfare_a = data_matrices['welfare'] + (a - 1) * data_matrices['cost']
 
         sw_result[a] = thetas_arr[np.argmax(welfare_a, axis=0)].tolist()
-
         cost_result[a] = []
         n_params = coop_freq.shape[1]
         for sp_idx in range(n_params):
@@ -41,16 +39,14 @@ def find_optimal_thetas_per_a(data_matrices: MetricMatrices, thetas, a_values):
             feasible_mask = coop_col > COOP_THRESHOLD
 
             if feasible_mask.any():
-                # Lowest theta where coop > 90%
-                first_feasible_idx = np.where(feasible_mask)[0][0]
+                feasible_idx = np.where(feasible_mask)[0]
                 cost_result[a].append({
-                    'theta': thetas_arr[first_feasible_idx],
+                    'theta': thetas_arr[feasible_idx[0]],
                     'feasible': True,
-                    'max_coop': coop_col[first_feasible_idx],
+                    'max_coop': coop_col[feasible_idx[0]],
                 })
             else:
-                # Never reaches 90%: use theta at max coop
-                best_coop_idx = np.argmax(coop_col)
+                best_coop_idx = int(np.argmax(coop_col))
                 cost_result[a].append({
                     'theta': thetas_arr[best_coop_idx],
                     'feasible': False,

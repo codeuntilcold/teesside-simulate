@@ -21,6 +21,14 @@ python plot_from_agg.py --agg-dir data_agg_cpp --fig-prefix cpp --game pd --stra
 python plot_from_agg.py --agg-dir data_agg_cpp --fig-prefix cpp --game pd --strategy neb --game-param 'b=2.0' --plot-type timeseries --theta 5.5 &
 python plot_from_agg.py --agg-dir data_agg_cpp --fig-prefix cpp --game pd --strategy neb --game-param 'b=2.0' --plot-type efficiency &
 
+### PD -- CPP -- DIFF
+python plot_from_agg.py --agg-dir data_agg_cpp --fig-prefix cpp --game pd --strategy pop --game-param 'b=1.2' --plot-type diff &
+python plot_from_agg.py --agg-dir data_agg_cpp --fig-prefix cpp --game pd --strategy pop --game-param 'b=1.8' --plot-type diff &
+python plot_from_agg.py --agg-dir data_agg_cpp --fig-prefix cpp --game pd --strategy pop --game-param 'b=2.0' --plot-type diff &
+python plot_from_agg.py --agg-dir data_agg_cpp --fig-prefix cpp --game pd --strategy neb --game-param 'b=1.2' --plot-type diff &
+python plot_from_agg.py --agg-dir data_agg_cpp --fig-prefix cpp --game pd --strategy neb --game-param 'b=1.8' --plot-type diff &
+python plot_from_agg.py --agg-dir data_agg_cpp --fig-prefix cpp --game pd --strategy neb --game-param 'b=2.0' --plot-type diff &
+
 ### PGG -- PYTHON
 python plot_from_agg.py --agg-dir data_agg --fig-prefix py --game pgg --strategy pop --game-param 'r=1.5' --plot-type timeseries --theta 4.5 &
 python plot_from_agg.py --agg-dir data_agg --fig-prefix py --game pgg --strategy pop --game-param 'r=1.5' --plot-type efficiency &

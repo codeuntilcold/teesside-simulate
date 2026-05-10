@@ -270,29 +270,36 @@ def _draw_optimal_panel(ax, cell_records: List[OptimalRecord],
     for r in cell_records:
         by_game_param.setdefault(r.game_param, []).append(r)
 
+    game_params_sorted = sorted(by_game_param.keys())
+    n_gps = len(game_params_sorted)
+
+    # x-offset spread per (sp, game_param) so multiple game_params at the same sp
+    # value don't stack on top of each other. Spread = ~30% of typical sp gap.
+    sample_x = [float(r.sp.split('=')[1]) for r in by_game_param[game_params_sorted[0]]]
+    sample_x.sort()
+    base_gap = (sample_x[-1] - sample_x[0]) / (len(sample_x) - 1) if len(sample_x) > 1 else 0.1
+    spread = base_gap * 0.30
+    if n_gps == 1:
+        x_offsets = [0.0]
+    else:
+        x_offsets = [-spread / 2 + spread * i / (n_gps - 1) for i in range(n_gps)]
+
     x_vals: List[float] = []
-    for idx, game_param in enumerate(sorted(by_game_param.keys())):
+    for idx, game_param in enumerate(game_params_sorted):
         sp_records = sorted(by_game_param[game_param], key=lambda r: float(r.sp.split('=')[1]))
         x_vals = [float(r.sp.split('=')[1]) for r in sp_records]
         color = _OPTIMAL_COLORS[idx % len(_OPTIMAL_COLORS)]
-        marker = _OPTIMAL_MARKERS[idx % len(_OPTIMAL_MARKERS)]
-        sw_off = _OPTIMAL_SW_OFFSETS[idx % len(_OPTIMAL_SW_OFFSETS)]
-        cost_off = _OPTIMAL_COST_OFFSETS[idx % len(_OPTIMAL_COST_OFFSETS)]
+        x_off = x_offsets[idx]
 
         for x, r in zip(x_vals, sp_records):
             if not r.feasible:
                 continue
-
-            ax.scatter([x], [r.theta_sw], marker=marker, color=color, s=60, zorder=3)
-            ax.annotate(f'{r.theta_sw:.1f}', (x, r.theta_sw),
-                        textcoords='offset points', xytext=sw_off,
-                        fontsize=7, color=color)
-
-            ax.scatter([x], [r.theta_cost], marker=marker, facecolors='none',
+            xp = x + x_off
+            # Vertical segment connecting Cost (hollow) to SW (filled) θ*.
+            ax.plot([xp, xp], [r.theta_cost, r.theta_sw], color=color, linewidth=1.2, zorder=2)
+            ax.scatter([xp], [r.theta_sw], marker='o', color=color, s=60, zorder=3)
+            ax.scatter([xp], [r.theta_cost], marker='o', facecolors='white',
                        edgecolors=color, s=60, linewidths=1.5, zorder=3)
-            ax.annotate(f'{r.theta_cost:.1f}', (x, r.theta_cost),
-                        textcoords='offset points', xytext=cost_off,
-                        fontsize=7, color=color)
 
     ax.set_xlabel('$p_C$' if strategy == 'pop' else '$n_C$')
     ax.set_xticks(x_vals)
@@ -314,7 +321,7 @@ def _make_optimal_legend(game_param_labels: List[str]):
     from matplotlib.lines import Line2D
     handles = []
     for idx, label in enumerate(game_param_labels):
-        handles.append(Line2D([0], [0], marker=_OPTIMAL_MARKERS[idx], color='w',
+        handles.append(Line2D([0], [0], marker='o', color='w',
                               markerfacecolor=_OPTIMAL_COLORS[idx], markersize=8,
                               label=latex_game_param(label)))
     handles.append(Line2D([0], [0], marker='o', color='w',
@@ -458,13 +465,18 @@ def plot_heatmap_grid_from_agg(
     y_tick_pos = list(range(0, len(theta_values), tick_step))
     y_tick_labels = [f"{theta_values[i]:.1f}" for i in y_tick_pos]
 
+    # Rotate x-tick labels when there are enough to crowd; keep upright otherwise.
+    x_rotation = 45 if len(strategy_params) > 6 else 0
+    x_ha = 'right' if x_rotation else 'center'
+
     def render(ax, matrix, panel_title, show_ylabel=False, vmin=None, vmax=None):
         im = ax.imshow(matrix, aspect='auto', cmap=COLOR_MAP,
                        origin='lower', interpolation=COLOR_INTERP,
                        vmin=vmin, vmax=vmax)
         ax.set_title(panel_title)
         ax.set_xticks(range(len(strategy_params)))
-        ax.set_xticklabels(x_tick_labels, fontsize=TICK_FONTSIZE)
+        ax.set_xticklabels(x_tick_labels, fontsize=TICK_FONTSIZE,
+                           rotation=x_rotation, ha=x_ha)
         ax.set_yticks(y_tick_pos)
         ax.set_yticklabels(y_tick_labels, fontsize=TICK_FONTSIZE)
         ax.set_xlabel(xlabel)
@@ -478,16 +490,14 @@ def plot_heatmap_grid_from_agg(
     for col_idx in range(2, n_cols):
         axes[0, col_idx].axis('off')
 
-    # Bottom row: SW for each a, sharing colormap range so per-a magnitudes are comparable.
-    sw_arrays = [adjusted_welfare_for_efficiency(data_matrices['welfare'], data_matrices['cost'], a)
-                 for a in a_values]
-    sw_vmin = min(arr.min() for arr in sw_arrays)
-    sw_vmax = max(arr.max() for arr in sw_arrays)
-    for col_idx, (a, welfare_a) in enumerate(zip(a_values, sw_arrays)):
+    # Bottom row: SW for each a (per-panel autoscale; a=1 is at base-welfare scale,
+    # a≠1 is dominated by the (a-1)·cost adjustment, so shared scale would crush a=1).
+    for col_idx, a in enumerate(a_values):
+        welfare_a = adjusted_welfare_for_efficiency(
+            data_matrices['welfare'], data_matrices['cost'], a
+        )
         render(axes[1, col_idx], welfare_a,
-               f'Social Welfare ($a = {a}$)',
-               show_ylabel=(col_idx == 0),
-               vmin=sw_vmin, vmax=sw_vmax)
+               f'Social Welfare ($a = {a}$)', show_ylabel=(col_idx == 0))
 
     if title:
         fig.suptitle(title, fontsize=16, y=1.02)
