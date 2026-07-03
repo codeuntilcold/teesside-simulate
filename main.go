@@ -357,6 +357,7 @@ func simulatePopulation(
 	gameType string, r float64,
 	rng *rand.Rand,
 	deterministic bool,
+	K float64,
 ) SimulationResult {
 	population := newPopulation(sizeX, sizeY, initialCooperatorRatio, rng)
 
@@ -397,7 +398,7 @@ func simulatePopulation(
 		historyFitness = append(historyFitness, totalFitness)
 		historySocialWelfare = append(historySocialWelfare, totalFitness-cost)
 
-		population = updatePopulation(population, fitnesses, 0.3, rng, deterministic)
+		population = updatePopulation(population, fitnesses, K, rng, deterministic)
 	}
 
 	return SimulationResult{
@@ -475,6 +476,7 @@ func main() {
 	outputDir := flag.String("output-dir", "data_go", "Output directory for CSV files")
 	beta := flag.Float64("beta", 1.8, "Beta value for Prisoner's Dilemma payoff matrix")
 	deterministic := flag.Bool("deterministic", false, "Use deterministic update rule (pick fittest neighbor)")
+	fermiK := flag.Float64("fermi-k", 0.3, "Fermi noise level K (stochastic update)")
 
 	flag.Parse()
 
@@ -498,6 +500,7 @@ func main() {
 				*gameType, *r,
 				rng,
 				*deterministic,
+				*fermiK,
 			)
 
 			freqStr := "[" + strings.Join(intSliceToStrings(result.HistoryFrequency), ", ") + "]"
